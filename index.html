@@ -2,17 +2,177 @@
 <html lang="uk">
 <head>
     <meta charset="UTF-8">
-    <title>WindowApp Pro</title>
-    <style>
-        body { font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background: #f0f2f5; }
-        .card { background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WindowApp Pro v2.0 - CAD & PDF</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=Outfit:wght@500;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+    <!-- PDF Export Bundle -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 </head>
 <body>
-    <div class="card">
-        <h1>WindowApp Pro v2.0</h1>
-        <p>Програма для розрахунку металопластикових конструкцій</p>
-        <p><i>Статус: Готово до роботи</i></p>
+    <div class="background-orbs">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
     </div>
+    
+    <!-- CAD Container Layout -->
+    <div id="cad-wrapper">
+        <!-- 2D SVG Canvas -->
+        <svg id="cad-canvas" xmlns="http://www.w3.org/2000/svg" width="100%" height="100%"></svg>
+    </div>
+
+    <!-- Hidden Export Container (Formatted logic for PDF A4 Landscape) -->
+    <div id="export-template" style="display:none; width: 1122px; height: 790px; background: white; color: black; padding: 40px; box-sizing: border-box;">
+        <h1 style="border-bottom: 2px solid #ccc; padding-bottom: 10px; font-family: sans-serif; color: #333;">Комерційна пропозиція - WindowApp Pro</h1>
+        <div style="display: flex; gap: 40px; margin-top: 30px; height: 500px;">
+            <div id="export-cad-box" style="flex: 2; border: 1px solid #eee; display:flex; align-items:center; justify-content:center;"></div>
+            <div id="export-details" style="flex: 1; font-family: sans-serif; display: flex; flex-direction: column;"></div>
+        </div>
+    </div>
+
+    <!-- Interface Sidebar -->
+    <div class="glass-container sidebar-left">
+        <header>
+            <h1>WindowApp <span class="badge">Pro</span></h1>
+            <p>v2.0: CAD & PDF Експорт</p>
+        </header>
+
+        <form id="calc-form">
+            <!-- Section 1 -->
+            <div class="form-section">
+                <h3>Габарити та Система</h3>
+                <div class="input-row">
+                    <div class="input-group">
+                        <label>Ширина (мм)</label>
+                        <input type="number" id="width" required value="1300" min="300" max="4000">
+                    </div>
+                    <div class="input-group">
+                        <label>Висота (мм)</label>
+                        <input type="number" id="height" required value="1400" min="300" max="3000">
+                    </div>
+                </div>
+                
+                <div class="input-group">
+                    <label>Профільна система</label>
+                    <select id="profile">
+                        <option value="REHAU_Synego">Rehau Synego</option>
+                        <option value="REHAU_Geneo">Rehau Geneo</option>
+                        <option value="REHAU_Euro_70" selected>Rehau Euro 70</option>
+                        <option value="WDS_500">WDS 500</option>
+                        <option value="STEKO">Steko</option>
+                        <option value="WDS_Door">WDS Вхідна група</option>
+                        <option value="REHAU_Door">Rehau Вхідні двері</option>
+                    </select>
+                </div>
+
+                <div class="input-group">
+                    <label>Заповнення</label>
+                    <select id="glass">
+                        <option value="glass_40" selected>Склопакет 40мм (енергозберігаючий)</option>
+                        <option value="glass_24">Склопакет 24мм</option>
+                        <option value="sandwich">Сендвіч-панель</option>
+                    </select>
+                </div>
+
+                <div class="input-group">
+                    <label>Колір конструкції</label>
+                    <div class="color-picker" id="color-picker">
+                        <div class="color-option active" data-color="white" style="background:#ffffff;" title="Білий"></div>
+                        <div class="color-option" data-color="anthracite" style="background:#3E4349;" title="Антрацит"></div>
+                        <div class="color-option" data-color="golden_oak" style="background:#C38B40;" title="Золотий дуб"></div>
+                    </div>
+                    <!-- hidden input to store the selected color -->
+                    <input type="hidden" id="selected-color" value="white">
+                </div>
+            </div>
+
+            <!-- Section 2 -->
+            <div class="form-section">
+                <h3>Конфігурація Секцій</h3>
+                <div class="input-group">
+                    <label>Кількість вертикальних секцій (1-5)</label>
+                    <input type="number" id="v-sections" value="2" min="1" max="5">
+                </div>
+                
+                <div id="dynamic-panels-container">
+                    <!-- JS injects panel configurations -->
+                </div>
+
+                <div class="input-group">
+                    <label>Виліт відливу (мм, 0 - без)</label>
+                    <input type="number" id="sill-overhang" value="150" min="0">
+                </div>
+
+                <div class="input-group">
+                    <label>Підвіконня</label>
+                    <select id="window-board">
+                        <option value="none" selected>Без підвіконня</option>
+                        <option value="window_board_plastolit_matte">Plastolit (Матове)</option>
+                        <option value="window_board_plastolit_gloss">Plastolit (Глянцеве)</option>
+                        <option value="window_board_danke_matte">Danke Преміум (Матове)</option>
+                        <option value="window_board_danke_gloss">Danke Преміум (Глянцеве)</option>
+                    </select>
+                </div>
+                <div class="input-row">
+                    <div class="input-group">
+                        <label>Довжина підвіконня (мм)</label>
+                        <input type="number" id="window-board-length" value="1400" min="0">
+                    </div>
+                    <div class="input-group">
+                        <label>Глибина (мм)</label>
+                        <input type="number" id="window-board-depth" value="200" min="0">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Section 3 -->
+            <div class="form-section">
+                <h3 class="collapsible-trigger" id="override-trigger">Ручні Ціни (Опціонально) ▼</h3>
+                <div class="collapsible-content hidden" id="override-content">
+                    <div class="input-group">
+                        <label>Ціна профілю (грн/м)</label>
+                        <input type="number" id="custom-prof" placeholder="З бази">
+                    </div>
+                    <div class="input-group">
+                        <label>Ціна скла (грн/м²)</label>
+                        <input type="number" id="custom-glass" placeholder="З бази">
+                    </div>
+                    <div class="input-group">
+                        <label>Фурнітура (грн/ст)</label>
+                        <input type="number" id="custom-hw" placeholder="З бази">
+                    </div>
+
+                    <div style="margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
+                        <label>Або оновіть всі ціни:</label>
+                        <input type="file" id="price-file-input" accept=".json" style="display: none;">
+                        <button type="button" class="btn-secondary" onclick="document.getElementById('price-file-input').click()" style="width: 100%; margin-top: 5px;">Оновити прайс з файлу</button>
+                    </div>
+                </div>
+            </div>
+
+            <button type="submit" class="btn-primary" id="btn-calc">Розрахувати та Намалювати <span class="loader hidden" id="loader"></span></button>
+        </form>
+
+        <div id="result-container" class="result-card hidden">
+            <h2>Фінансовий Підсумок</h2>
+            <div class="result-grid small-grid">
+                <div class="result-item"><span class="label">Рама</span><span class="value sm-val" id="res-prof-cost">0</span></div>
+                <div class="result-item"><span class="label">Скло</span><span class="value sm-val" id="res-glass-cost">0</span></div>
+                <div class="result-item"><span class="label">Фурнітура</span><span class="value sm-val" id="res-hw-cost">0</span></div>
+                <div class="result-item"><span class="label">Дод. опції</span><span class="value sm-val" id="res-extra-cost">0</span></div>
+            </div>
+            <div class="result-item full-width highlight-cost" style="margin-top: 10px;">
+                <span class="label">Загальна вартість</span>
+                <span class="value" id="res-total">0.00 <small>грн</small></span>
+            </div>
+            
+            <button class="btn-secondary" id="btn-export" style="margin-top: 15px; width:100%;">Експорт у PDF</button>
+        </div>
+        
+        <div id="error-message" class="error-toast hidden"></div>
+    </div>
+
+    <script src="/static/script.js"></script>
 </body>
 </html>
