@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WindowApp Pro - Final CAD</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+</head>
+<body>
+
+    <div class="calculator-card">
+        <h1>🛠️ WindowApp Pro</h1>
+        
+        <div class="form-group">
+            <label>Розміри (Ш х В):</label>
+            <div style="display: flex; gap: 5px;">
+                <input type="number" id="width" value="1200" oninput="calculate()">
+                <input type="number" id="height" value="1400" oninput="calculate()">
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label>Секції (Верт / Гор):</label>
+            <div style="display: flex; gap: 5px;">
+                <input type="number" id="v-sections" value="2" min="1" max="5" oninput="calculate()">
+                <input type="number" id="h-sections" value="1" min="1" max="3" oninput="calculate()">
+            </div>
+        </div>
+
+        <div id="sections-controls-wrapper">
+            <label style="font-size: 11px; font-weight: bold;">Стулки (Пропорція | Тип):</label>
+            <div id="sections-controls"></div>
+        </div>
+
+        <div class="form-group">
+            <label>Колір / Профіль / Скло:</label>
+            <select id="color-type" onchange="calculate()">
+                <option value="#ffffff">Білий</option>
+                <option value="#454545">Антрацит</option>
+                <option value="#4b3621">Золотий дуб</option>
+            </select>
+            <select id="profile-type" onchange="calculate()" style="margin-top:5px;">
+                <option value="REHAU_70" selected>Rehau Euro 70</option>
+                <option value="SYNEGO">Rehau Synego (80мм)</option>
+                <option value="WDS_5">WDS 5 Series</option>
+            </select>
+            <select id="filling-type" onchange="calculate()" style="margin-top:5px;">
+                <option value="glass_40" selected>Склопакет 40мм</option>
+                <option value="glass_24">Склопакет 24мм</option>
+                <option value="sandwich">Сендвіч-панель</option>
+            </select>
+        </div>
+
+        <div class="form-group" style="background: #fff3cd; padding: 10px; border-radius: 6px;">
+            <label>💰 Ручні ціни (якщо треба):</label>
+            <input type="number" id="price-prof-manual" placeholder="Профіль грн/м²" oninput="calculate()" style="margin-bottom:5px;">
+            <input type="number" id="price-fill-manual" placeholder="Скло грн/м²" oninput="calculate()">
+        </div>
+
+        <div id="result"></div>
+        
+        <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 10px;">
+            <button id="pdf-btn" onclick="generatePDF()" style="background:#e84118; color:white; border:none; padding:12px; border-radius:6px; font-weight:bold; cursor:pointer;">📄 ЗАВАНТАЖИТИ PDF-КП</button>
+        </div>
+    </div>
+
+    <div class="canvas-container">
+        <div id="window-draw"></div>
+    </div>
+
+    <div id="export-container" style="position: absolute; left: -9999px; background: white; padding: 40px; width: 1000px;">
+        <h2 style="text-align: center; color: #1a73e8;">Технічне замовлення №<span id="pdf-order-id"></span></h2>
+        <div id="pdf-window-view" style="display: flex; justify-content: center; margin-bottom: 50px;"></div>
+        <div id="pdf-data-table"></div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
