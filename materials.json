@@ -1,15 +1,15 @@
 {
     "profiles": {
-        "WDS_400": { "name": "WDS 400", "weight_per_m": 1.2, "price_per_m": 150.0 },
-        "WDS_500": { "name": "WDS 500", "weight_per_m": 1.4, "price_per_m": 180.0 },
-        "WDS_60": { "name": "WDS 60", "weight_per_m": 1.1, "price_per_m": 130.0 },
-        "REHAU_Euro_60": { "name": "Rehau Euro 60", "weight_per_m": 1.15, "price_per_m": 200.0 },
-        "REHAU_Euro_70": { "name": "Rehau Euro 70", "weight_per_m": 1.35, "price_per_m": 250.0 },
-        "REHAU_Synego": { "name": "Rehau Synego", "weight_per_m": 1.5, "price_per_m": 400.0 },
-        "REHAU_Geneo": { "name": "Rehau Geneo", "weight_per_m": 1.6, "price_per_m": 550.0 },
-        "STEKO": { "name": "Steko", "weight_per_m": 1.25, "price_per_m": 160.0 },
-        "WDS_Door": { "name": "WDS Вхідна група", "weight_per_m": 1.8, "price_per_m": 250.0 },
-        "REHAU_Door": { "name": "Rehau Вхідні двері", "weight_per_m": 2.0, "price_per_m": 350.0 }
+        "WDS_400": { "name": "WDS 400", "weight_per_m": 1.2, "price_per_m": 150.0, "limits": { "max_width": 1400, "max_height": 1800, "max_weight": 80 } },
+        "WDS_500": { "name": "WDS 500", "weight_per_m": 1.4, "price_per_m": 180.0, "limits": { "max_width": 1500, "max_height": 2000, "max_weight": 100 } },
+        "WDS_60": { "name": "WDS 60", "weight_per_m": 1.1, "price_per_m": 130.0, "limits": { "max_width": 1400, "max_height": 1800, "max_weight": 80 } },
+        "REHAU_Euro_60": { "name": "Rehau Euro 60", "weight_per_m": 1.15, "price_per_m": 200.0, "limits": { "max_width": 1400, "max_height": 1800, "max_weight": 80 } },
+        "REHAU_Euro_70": { "name": "Rehau Euro 70", "weight_per_m": 1.35, "price_per_m": 250.0, "limits": { "max_width": 1600, "max_height": 2200, "max_weight": 110 } },
+        "REHAU_Synego": { "name": "Rehau Synego", "weight_per_m": 1.5, "price_per_m": 400.0, "limits": { "max_width": 1800, "max_height": 2600, "max_weight": 140 } },
+        "REHAU_Geneo": { "name": "Rehau Geneo", "weight_per_m": 1.6, "price_per_m": 550.0, "limits": { "max_width": 2000, "max_height": 2800, "max_weight": 160 } },
+        "STEKO": { "name": "Steko", "weight_per_m": 1.25, "price_per_m": 160.0, "limits": { "max_width": 1400, "max_height": 1800, "max_weight": 80 } },
+        "WDS_Door": { "name": "WDS Вхідна група", "weight_per_m": 1.8, "price_per_m": 250.0, "limits": { "max_width": 1200, "max_height": 2400, "max_weight": 130 } },
+        "REHAU_Door": { "name": "Rehau Вхідні двері", "weight_per_m": 2.0, "price_per_m": 350.0, "limits": { "max_width": 1300, "max_height": 2500, "max_weight": 150 } }
     },
     "fillings": {
         "glass_24": { "name": "Склопакет 24мм", "weight_per_m2": 20.0, "price_per_m2": 800.0 },
@@ -26,7 +26,8 @@
     },
     "extras": {
         "mosquito_net": { "name": "Москітна сітка", "price_per_m2": 350.0 },
-        "sill": { "name": "Відлив", "price_per_m": 150.0 },
+        "sill": { "name": "Відлив", "price_per_m2": 600.0 },
+        "bending": { "name": "Гнуття профілю (Арки)", "price_per_m": 600.0 },
         "window_board_plastolit_matte": { "name": "Підвіконня Plastolit (Матове)", "price_per_m2": 1500.0 },
         "window_board_plastolit_gloss": { "name": "Підвіконня Plastolit (Глянець)", "price_per_m2": 1700.0 },
         "window_board_danke_matte": { "name": "Підвіконня Danke (Матове)", "price_per_m2": 2800.0 },
