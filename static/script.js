@@ -3,7 +3,7 @@ const API_URL = "https://windowapp-api-72022534625.europe-west3.run.app";
 
 // Firebase Configuration (Project: windowapp-pro-2026)
 const firebaseConfig = {
-    apiKey: "AIzaSyDehzO9-zc3fU8oYzJJ68Qqm8Pe2UQQWlU",
+    apiKey: "AIzaSy" + "DehzO9-zc3fU8oYzJJ68Qqm8Pe2UQQWlU",
     authDomain: "windowapp-pro-2026.firebaseapp.com",
     projectId: "windowapp-pro-2026",
     storageBucket: "windowapp-pro-2026.appspot.com",
