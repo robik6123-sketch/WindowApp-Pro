@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, Depends, status
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -8,13 +8,10 @@ from pdf_generator import generate_cart_pdf
 import os
 import json
 import uuid
-import logging
 from datetime import datetime
 import firebase_admin
 from firebase_admin import auth
-
-# Initialize logger
-logger = logging.getLogger("WindowApp")
+from auth_dependency import verify_firebase_token
 
 app = FastAPI(title="WindowApp Pro API", version="2.0.0")
 security = HTTPBearer()
@@ -41,9 +38,6 @@ async def get_current_user(res: HTTPAuthorizationCredentials = Depends(security)
         return decoded_token
     except Exception as e:
         raise HTTPException(status_code=401, detail="Invalid authentication credentials")
-
-# Import auth dependency
-from auth_dependency import verify_firebase_token
 
 @app.get("/")
 async def root():
@@ -131,19 +125,19 @@ async def get_quote_pdf(order_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/orders")
-async def get_user_orders(user: dict = Depends(get_current_user)):
-    if not USE_FIRESTORE: return []
+async def get_user_orders(current_user: dict = Depends(verify_firebase_token)):
+    if not USE_FIRESTORE:
+        return []
     try:
-        query = calc.db.collection('orders')
-        if user["email"] != 'robik6123@gmail.com':
-            query = query.where('user_email', '==', user["email"])
-
+        query = calc.db.collection('orders').where('owner_uid', '==', current_user["uid"])
         docs = query.limit(20).stream()
         results = [doc.to_dict() for doc in docs]
         results.sort(key=lambda x: x.get('timestamp'), reverse=True)
         return results[:10]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=503, detail="Service Unavailable")
 
 @app.post("/api/migrate")
 async def migrate():
