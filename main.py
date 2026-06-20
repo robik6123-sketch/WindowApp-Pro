@@ -54,43 +54,56 @@ async def verify_firebase_token(credentials: HTTPAuthorizationCredentials = Depe
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized"
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Bearer"}
         )
-    
+
     if credentials.scheme.lower() != "bearer":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized"
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Bearer"}
         )
-        
+
     token = credentials.credentials
-    if not token:
+    if not token or not token.strip():
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized"
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Bearer"}
         )
-        
+
     try:
         # Call Firebase Admin to verify token
         decoded_token = auth.verify_id_token(token)
-        
-        # Verify UID is present in the decoded token
-        uid = decoded_token.get("uid")
-        if not uid:
+
+        if decoded_token is None or not isinstance(decoded_token, dict):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Unauthorized"
+                detail="Unauthorized",
+                headers={"WWW-Authenticate": "Bearer"}
             )
-            
+
+        # Verify UID is present in the decoded token
+        uid = decoded_token.get("uid")
+        if not uid or uid == "":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Unauthorized",
+                headers={"WWW-Authenticate": "Bearer"}
+            )
+
         email = decoded_token.get("email") # may be missing/None
-        
+
         # Standard Firebase claims to filter out to get clean custom claims
         standard_claims = {
             "iss", "aud", "auth_time", "sub", "iat", "exp", "firebase",
-            "uid", "email", "email_verified", "user_id"
+            "uid", "email", "email_verified", "user_id",
+            "name", "picture", "phone_number", "nbf", "jti", "nonce",
+            "azp", "amr", "acr"
         }
         custom_claims = {k: v for k, v in decoded_token.items() if k not in standard_claims}
-        
+
         return {
             "uid": uid,
             "email": email,
@@ -102,10 +115,11 @@ async def verify_firebase_token(credentials: HTTPAuthorizationCredentials = Depe
     except Exception as e:
         # Generic error handling to avoid leaking Firebase internals
         # We also do NOT log the token itself to prevent security leaks
-        logger.error(f"Authentication failed: {type(e).__name__}")
+        logger.warning(f"Authentication failed: {type(e).__name__}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized"
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Bearer"}
         )
 
 @app.get("/")
@@ -128,7 +142,7 @@ async def calculate(request: Request, order: dict):
     try:
         if order.get("width", 0) > 4000 or order.get("height", 0) > 3000:
             raise HTTPException(status_code=400, detail="Габарити перевищують інженерні норми")
-        
+
         result = calc.calculate_project(order)
         # We don't save to firestore here anymore, because this is just a calculation preview.
         # Saving happens in /api/create-order
@@ -157,7 +171,7 @@ async def create_order(request: Request, cart: dict):
                 "cart": cart
             }
             calc.db.collection('orders').document(order_id).set(order_record)
-        
+
         return {"status": "success", "order_id": order_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -166,14 +180,14 @@ async def create_order(request: Request, cart: dict):
 async def get_quote_pdf(order_id: str):
     if not USE_FIRESTORE:
         raise HTTPException(status_code=400, detail="Firestore is required for history-based PDF")
-    
+
     try:
         doc_ref = calc.db.collection('orders').document(order_id).get()
         if not doc_ref.exists:
             raise HTTPException(status_code=404, detail="Замовлення не знайдено")
-        
+
         data = doc_ref.to_dict()
-        
+
         if "cart" in data:
             cart_data = data["cart"]
             cart_data["order_id"] = order_id
@@ -183,7 +197,7 @@ async def get_quote_pdf(order_id: str):
                 "order_id": order_id,
                 "items": [{"input": data.get("input", {}), "result": data.get("result", {})}]
             }
-            
+
         pdf_content = generate_cart_pdf(cart_data)
         return Response(
             content=bytes(pdf_content),
@@ -200,7 +214,7 @@ async def get_user_orders(user: dict = Depends(get_current_user)):
         query = calc.db.collection('orders')
         if user["email"] != 'robik6123@gmail.com':
             query = query.where('user_email', '==', user["email"])
-            
+
         docs = query.limit(20).stream()
         results = [doc.to_dict() for doc in docs]
         results.sort(key=lambda x: x.get('timestamp'), reverse=True)
@@ -213,16 +227,16 @@ async def migrate():
     """Endpoint to migrate local materials.json to Firestore"""
     if not USE_FIRESTORE:
         return {"status": "error", "message": "Firestore is not enabled"}
-    
+
     try:
         with open("materials.json", "r", encoding="utf-8") as f:
             data = json.load(f)
-            
+
         # Sync each category
         for category in ["profiles", "fillings", "hardware", "extras", "colors"]:
             if category in data:
                 app.state.db.collection('materials').document(category).set(data[category])
-        
+
         return {"status": "success", "message": "Data migrated to Firestore"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
