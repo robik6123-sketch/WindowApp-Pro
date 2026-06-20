@@ -42,85 +42,8 @@ async def get_current_user(res: HTTPAuthorizationCredentials = Depends(security)
     except Exception as e:
         raise HTTPException(status_code=401, detail="Invalid authentication credentials")
 
-security_bearer = HTTPBearer(auto_error=False)
-
-async def verify_firebase_token(credentials: HTTPAuthorizationCredentials = Depends(security_bearer)):
-    """
-    Verifies the Firebase ID Token passed in the Authorization header.
-    Returns a dict containing normalized user data: {'uid': ..., 'email': ..., 'claims': ...}
-    Raises HTTP 401 on any failure, without exposing internal Firebase exception details
-    and without logging/printing the token.
-    """
-    if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized",
-            headers={"WWW-Authenticate": "Bearer"}
-        )
-
-    if credentials.scheme.lower() != "bearer":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized",
-            headers={"WWW-Authenticate": "Bearer"}
-        )
-
-    token = credentials.credentials
-    if not token or not token.strip():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized",
-            headers={"WWW-Authenticate": "Bearer"}
-        )
-
-    try:
-        # Call Firebase Admin to verify token
-        decoded_token = auth.verify_id_token(token)
-
-        if decoded_token is None or not isinstance(decoded_token, dict):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Unauthorized",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
-
-        # Verify UID is present in the decoded token
-        uid = decoded_token.get("uid")
-        if not uid or uid == "":
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Unauthorized",
-                headers={"WWW-Authenticate": "Bearer"}
-            )
-
-        email = decoded_token.get("email") # may be missing/None
-
-        # Standard Firebase claims to filter out to get clean custom claims
-        standard_claims = {
-            "iss", "aud", "auth_time", "sub", "iat", "exp", "firebase",
-            "uid", "email", "email_verified", "user_id",
-            "name", "picture", "phone_number", "nbf", "jti", "nonce",
-            "azp", "amr", "acr"
-        }
-        custom_claims = {k: v for k, v in decoded_token.items() if k not in standard_claims}
-
-        return {
-            "uid": uid,
-            "email": email,
-            "claims": custom_claims
-        }
-    except HTTPException:
-        # Re-raise our own HTTPException
-        raise
-    except Exception as e:
-        # Generic error handling to avoid leaking Firebase internals
-        # We also do NOT log the token itself to prevent security leaks
-        logger.warning(f"Authentication failed: {type(e).__name__}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Unauthorized",
-            headers={"WWW-Authenticate": "Bearer"}
-        )
+# Import auth dependency
+from auth_dependency import verify_firebase_token
 
 @app.get("/")
 async def root():
