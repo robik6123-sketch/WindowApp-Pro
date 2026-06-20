@@ -1,5 +1,7 @@
 // Глобальні налаштування додатку
-const API_URL = "https://windowapp-api-72022534625.europe-west3.run.app";
+const API_URL = window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1')
+    ? window.location.origin
+    : "https://windowapp-api-72022534625.europe-west3.run.app";
 
 // Firebase Configuration (Project: windowapp-pro-2026)
 const firebaseConfig = {
@@ -680,7 +682,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // 4. Outer Labels & Sills (Only on Inside view for clarity, or not mirrored)
         if (viewType === 'inside') {
             const dimStyle = { fill: '#fff', 'font-size': '36px', 'text-anchor': 'middle' };
-            svg.appendChild(makeSVG('text', { x: winW/2, y: winH + 80, ...dimStyle })).textContent = `${winW} mm`;
+            svg.appendChild(makeSVG('text', { x: winW/2, y: -60, ...dimStyle })).textContent = `${winW} mm`;
             const vDim = makeSVG('text', { x: -80, y: winH/2, ...dimStyle, transform: `rotate(-90, -80, ${winH/2})` });
             vDim.textContent = `${winH} mm`;
             svg.appendChild(vDim);

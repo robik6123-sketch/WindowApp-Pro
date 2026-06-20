@@ -2,6 +2,18 @@ from fpdf import FPDF
 import datetime
 import io
 import base64
+import struct
+
+def get_png_dimensions(base64_str):
+    if not base64_str:
+        return 1000, 1000
+    try:
+        img_data = base64.b64decode(base64_str.split(',')[1])
+        # PNG IHDR width is at 16-19, height at 20-23
+        w, h = struct.unpack('>II', img_data[16:24])
+        return w, h
+    except:
+        return 1000, 1000
 
 class CartQuotePDF(FPDF):
     def __init__(self):
@@ -69,24 +81,63 @@ def generate_cart_pdf(cart_data):
 
         start_y = pdf.get_y()
         
-        # 2D Image (Front)
+        # Collage of 3 Images (Front, Outside, Side)
         images = inp.get('images', {})
-        img_w = 80
+        img_w = 58
+        
+        # Determine actual aspect ratio and height of each image dynamically
+        front_w, front_h = get_png_dimensions(images.get('front'))
+        front_pdf_h = img_w * (front_h / front_w)
+        
+        outside_w, outside_h = get_png_dimensions(images.get('outside'))
+        outside_pdf_h = img_w * (outside_h / outside_w)
+        
+        side_w, side_h = get_png_dimensions(images.get('side'))
+        side_pdf_h = img_w * (side_h / side_w)
+        
+        max_img_h = max(front_pdf_h, outside_pdf_h, side_pdf_h)
+        
+        # 1. Front View (Inside)
         if images.get('front'):
             try:
                 img_data = base64.b64decode(images['front'].split(',')[1])
                 img_buf = io.BytesIO(img_data)
-                pdf.image(img_buf, x=10, y=start_y, w=img_w)
-                pdf.set_xy(10, start_y + (img_w * 0.75) + 2)
+                pdf.image(img_buf, x=10, y=start_y, w=img_w, h=front_pdf_h)
+                pdf.set_xy(10, start_y + front_pdf_h + 1)
                 pdf.set_font('Roboto', 'I', 8)
                 pdf.cell(img_w, 5, text="Вигляд зсередини", align='C')
             except: pass
 
-        # Specs
-        table_x = 10 + img_w + 10
-        pdf.set_xy(table_x, start_y)
+        # 2. Outside View (Facade)
+        if images.get('outside'):
+            try:
+                img_data = base64.b64decode(images['outside'].split(',')[1])
+                img_buf = io.BytesIO(img_data)
+                pdf.image(img_buf, x=73, y=start_y, w=img_w, h=outside_pdf_h)
+                pdf.set_xy(73, start_y + outside_pdf_h + 1)
+                pdf.set_font('Roboto', 'I', 8)
+                pdf.cell(img_w, 5, text="Вигляд зовні (фасад)", align='C')
+            except: pass
+
+        # 3. Side View (Profile)
+        if images.get('side'):
+            try:
+                img_data = base64.b64decode(images['side'].split(',')[1])
+                img_buf = io.BytesIO(img_data)
+                pdf.image(img_buf, x=136, y=start_y, w=img_w, h=side_pdf_h)
+                pdf.set_xy(136, start_y + side_pdf_h + 1)
+                pdf.set_font('Roboto', 'I', 8)
+                pdf.cell(img_w, 5, text="Вигляд справа (профіль)", align='C')
+            except: pass
+
+        # Y position for the tables below the collage
+        tables_y = start_y + max_img_h + 8
+        table_w = 90
+        
+        # Specs Table (Left)
+        pdf.set_xy(10, tables_y)
         pdf.set_font('Roboto', 'B', 9)
-        pdf.cell(90, 6, text="Характеристики", border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(table_w, 6, text="Характеристики", border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
         
         specs = [
             ("Профіль", inp.get('profile', 'Стандарт')),
@@ -96,16 +147,16 @@ def generate_cart_pdf(cart_data):
         ]
         
         for k, v in specs:
-            pdf.set_xy(table_x, pdf.get_y())
+            pdf.set_xy(10, pdf.get_y())
             pdf.set_font('Roboto', 'B', 8)
             pdf.cell(30, 6, text=f" {k}:", border=1)
             pdf.set_font('Roboto', '', 8)
             pdf.cell(60, 6, text=f" {v}", border=1, new_x="LMARGIN", new_y="NEXT")
 
-        # Metrics
-        pdf.set_xy(table_x, pdf.get_y() + 2)
+        # Metrics Table (Right)
+        pdf.set_xy(110, tables_y)
         pdf.set_font('Roboto', 'B', 9)
-        pdf.cell(90, 6, text="Інженерні дані", border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(table_w, 6, text="Інженерні дані", border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
         
         m_data = [
             ("Площа", f"{metrics.get('area', 0)} м²"),
@@ -113,21 +164,22 @@ def generate_cart_pdf(cart_data):
             ("Вага", f"{metrics.get('weight', 0)} кг")
         ]
         for k, v in m_data:
-            pdf.set_xy(table_x, pdf.get_y())
+            pdf.set_xy(110, pdf.get_y())
             pdf.set_font('Roboto', 'B', 8)
             pdf.cell(30, 6, text=f" {k}:", border=1)
             pdf.set_font('Roboto', '', 8)
             pdf.cell(60, 6, text=f" {v}", border=1, new_x="LMARGIN", new_y="NEXT")
             
-        # Price
-        pdf.set_xy(table_x, pdf.get_y() + 2)
+        # Price Box (Right, below Metrics)
+        pdf.set_xy(110, pdf.get_y() + 2)
         pdf.set_font('Roboto', 'B', 10)
         pdf.set_text_color(*pdf.primary_col)
-        pdf.cell(90, 8, text=f" Вартість: {cost.get('total', 0):,.2f} грн", border=1, new_x="LMARGIN", new_y="NEXT", align='R')
-        pdf.set_text_color(0,0,0)
+        pdf.cell(table_w, 8, text=f" Вартість: {cost.get('total', 0):,.2f} грн", border=1, new_x="LMARGIN", new_y="NEXT", align='R')
+        pdf.set_text_color(0, 0, 0)
 
-        end_y = max(pdf.get_y(), start_y + (img_w * 0.75) + 10)
-        pdf.set_y(end_y + 5)
+        # Update end_y to be below the tables
+        end_y = tables_y + 36
+        pdf.set_y(end_y)
         
         if idx < len(items) - 1 and pdf.get_y() > 200:
             pdf.add_page()
@@ -203,6 +255,6 @@ def generate_cart_pdf(cart_data):
     pdf.set_font('Roboto', 'B', 10)
     pdf.cell(0, 8, text=" Інформаційні повідомлення", border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
     pdf.set_font('Roboto', '', 9)
-    pdf.multi_cell(0, 6, text="• Продукція не може бути довжиною більше 3500 мм через проблеми з відвантаженням.\n• Біла конструкція ПВХ постачається без гарантії через менші ніж дозволено розміри (якщо застосовно).\n• Розрахунок дійсний протягом 72 годин.", border=1)
+    pdf.multi_cell(0, 6, text="• Продукція не може бути довжиною більше 3500 мм через проблеми з відвантаженням.\n• Конструкція ПВХ постачається без гарантії у разі перевищення максимально дозволених розмірів (якщо застосовно).\n• Розрахунок дійсний протягом 72 годин.", border=1)
 
     return pdf.output()
