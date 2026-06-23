@@ -68,30 +68,22 @@ async def calculate(request: Request, order: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/create-order")
-async def create_order(request: Request, cart: dict):
-    user_email = cart.get("user_email")
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        try:
-            token = auth_header.split(" ")[1]
-            decoded = auth.verify_id_token(token)
-            user_email = decoded.get("email")
-        except: pass
-
+async def create_order(cart: dict, current_user: dict = Depends(verify_firebase_token)):
     try:
         order_id = str(uuid.uuid4())[:8].upper()
         if USE_FIRESTORE:
             order_record = {
                 "id": order_id,
                 "timestamp": datetime.now(),
-                "user_email": user_email or "anonymous",
+                "owner_uid": current_user["uid"],
+                "user_email": current_user.get("email"),
                 "cart": cart
             }
             calc.db.collection('orders').document(order_id).set(order_record)
 
         return {"status": "success", "order_id": order_id}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.get("/api/generate-quote/{order_id}")
 async def get_quote_pdf(order_id: str):

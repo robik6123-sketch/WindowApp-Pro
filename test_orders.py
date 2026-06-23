@@ -186,16 +186,12 @@ class TestOrdersRoute(unittest.TestCase):
         mock_db = MagicMock()
         main.calc.db = mock_db
 
-        # Mock returning a document that has no owner_uid (or wrong one)
-        mock_doc = MagicMock()
-        mock_doc.to_dict.return_value = {
-            "order_id": "ORD_OLD",
-            "user_email": "user@example.com"  # missing owner_uid
-        }
-        mock_db.collection.return_value.where.return_value.limit.return_value.stream.return_value = [mock_doc]
+        # Since query filters by owner_uid, a document without owner_uid won't match, so stream returns empty list
+        mock_db.collection.return_value.where.return_value.limit.return_value.stream.return_value = []
 
         response = client.get("/api/orders", headers={"Authorization": "Bearer valid_token"})
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
         # Since Firestore filter is strict, the query assertion confirms the secure design.
         mock_db.collection.return_value.where.assert_called_once_with('owner_uid', '==', 'user_123')
 
@@ -258,6 +254,87 @@ class TestOrdersRoute(unittest.TestCase):
 
         # Assert query is specifically for verified_user_999
         mock_db.collection.return_value.where.assert_called_once_with('owner_uid', '==', 'verified_user_999')
+
+    @patch("auth_dependency.auth.verify_id_token")
+    def test_create_order_missing_token_401(self, mock_verify):
+        """13. create-order: Missing token -> 401"""
+        response = client.post("/api/create-order", json={"items": []})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.headers.get("WWW-Authenticate"), "Bearer")
+
+    @patch("auth_dependency.auth.verify_id_token")
+    def test_create_order_invalid_token_401(self, mock_verify):
+        """14. create-order: Invalid token -> 401"""
+        mock_verify.side_effect = Exception("Invalid token")
+        response = client.post("/api/create-order", json={"items": []}, headers={"Authorization": "Bearer invalid_token"})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.headers.get("WWW-Authenticate"), "Bearer")
+
+    def test_create_order_writes_correct_owner_uid(self):
+        """15. create-order: Valid user -> 200, writes owner_uid & user_email to Firestore"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        cart_data = {"items": [{"item_id": 1}]}
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "success")
+        order_id = response.json()["order_id"]
+
+        # Verify Firestore call
+        mock_db.collection.assert_called_once_with('orders')
+        mock_db.collection.return_value.document.assert_called_once_with(order_id)
+
+        # Verify the saved record
+        saved_record = mock_db.collection.return_value.document.return_value.set.call_args[0][0]
+        self.assertEqual(saved_record["id"], order_id)
+        self.assertEqual(saved_record["owner_uid"], "user_123")
+        self.assertEqual(saved_record["user_email"], "user@example.com")
+        self.assertEqual(saved_record["cart"], cart_data)
+        self.assertIn("timestamp", saved_record)
+
+    def test_create_order_ignores_client_supplied_uid_and_email(self):
+        """16. create-order: Ignores client-supplied UID/email in body/query, uses token's values"""
+        user_payload = {"uid": "real_uid", "email": "real_email@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        cart_data = {
+            "items": [],
+            "user_email": "fake_email@example.com",
+            "owner_uid": "fake_uid",
+            "uid": "fake_uid_2"
+        }
+        # Request with query parameters as well
+        response = client.post("/api/create-order?uid=query_uid&user_email=query_email", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+        order_id = response.json()["order_id"]
+
+        saved_record = mock_db.collection.return_value.document.return_value.set.call_args[0][0]
+        self.assertEqual(saved_record["owner_uid"], "real_uid")
+        self.assertEqual(saved_record["user_email"], "real_email@example.com")
+        # Ensure the cart dict structure itself was not modified
+        self.assertEqual(saved_record["cart"], cart_data)
+
+    def test_create_order_firestore_error_500(self):
+        """17. create-order: Firestore error -> 500 without leaking details"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+        # Simulate Firestore failure
+        mock_db.collection.side_effect = Exception("Secret Firestore network crash details")
+
+        response = client.post("/api/create-order", json={"items": []}, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn("Secret Firestore network crash details", response.text)
+        self.assertEqual(response.json()["detail"], "Internal Server Error")
 
 if __name__ == "__main__":
     unittest.main()
