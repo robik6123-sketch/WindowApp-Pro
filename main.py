@@ -86,16 +86,23 @@ async def create_order(cart: dict, current_user: dict = Depends(verify_firebase_
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.get("/api/generate-quote/{order_id}")
-async def get_quote_pdf(order_id: str):
+async def get_quote_pdf(order_id: str, current_user: dict = Depends(verify_firebase_token)):
     if not USE_FIRESTORE:
         raise HTTPException(status_code=400, detail="Firestore is required for history-based PDF")
 
     try:
-        doc_ref = calc.db.collection('orders').document(order_id).get()
+        try:
+            doc_ref = calc.db.collection('orders').document(order_id).get()
+        except Exception:
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
         if not doc_ref.exists:
             raise HTTPException(status_code=404, detail="Замовлення не знайдено")
 
         data = doc_ref.to_dict()
+
+        if data.get("owner_uid") != current_user["uid"]:
+            raise HTTPException(status_code=403, detail="Forbidden")
 
         if "cart" in data:
             cart_data = data["cart"]
@@ -107,14 +114,20 @@ async def get_quote_pdf(order_id: str):
                 "items": [{"input": data.get("input", {}), "result": data.get("result", {})}]
             }
 
-        pdf_content = generate_cart_pdf(cart_data)
+        try:
+            pdf_content = generate_cart_pdf(cart_data)
+        except Exception:
+            raise HTTPException(status_code=500, detail="Internal Server Error")
+
         return Response(
             content=bytes(pdf_content),
             media_type="application/pdf",
             headers={"Content-Disposition": f"attachment; filename=WindowApp_Quote_{order_id}.pdf"}
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.get("/api/orders")
 async def get_user_orders(current_user: dict = Depends(verify_firebase_token)):

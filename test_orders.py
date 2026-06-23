@@ -336,5 +336,137 @@ class TestOrdersRoute(unittest.TestCase):
         self.assertNotIn("Secret Firestore network crash details", response.text)
         self.assertEqual(response.json()["detail"], "Internal Server Error")
 
+    @patch("main.generate_cart_pdf")
+    def test_generate_quote_owner_receives_pdf(self, mock_generate_pdf):
+        """18. generate-quote: Valid owner gets PDF and correct parameters are passed"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        cart_data = {"items": [], "user_email": "user@example.com"}
+        mock_doc.to_dict.return_value = {
+            "owner_uid": "user_123",
+            "cart": cart_data
+        }
+        mock_db.collection.return_value.document.return_value.get.return_value = mock_doc
+        mock_generate_pdf.return_value = b"PDF-dummy-content"
+
+        response = client.get("/api/generate-quote/ORD123", headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("content-type"), "application/pdf")
+        self.assertEqual(response.content, b"PDF-dummy-content")
+
+        expected_cart_data = cart_data.copy()
+        expected_cart_data["order_id"] = "ORD123"
+        mock_generate_pdf.assert_called_once_with(expected_cart_data)
+
+    def test_generate_quote_other_user_403(self):
+        """19. generate-quote: Non-owner gets 403 Forbidden (no 500)"""
+        user_payload = {"uid": "attacker_456", "email": "attacker@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        mock_doc.to_dict.return_value = {
+            "owner_uid": "user_123"
+        }
+        mock_db.collection.return_value.document.return_value.get.return_value = mock_doc
+
+        response = client.get("/api/generate-quote/ORD123", headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["detail"], "Forbidden")
+
+    def test_generate_quote_missing_order_404(self):
+        """20. generate-quote: Missing order -> 404 Not Found (no 500)"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_doc = MagicMock()
+        mock_doc.exists = False
+        mock_db.collection.return_value.document.return_value.get.return_value = mock_doc
+
+        response = client.get("/api/generate-quote/ORD_MISSING", headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Замовлення не знайдено")
+
+    @patch("auth_dependency.auth.verify_id_token")
+    def test_generate_quote_missing_token_401(self, mock_verify):
+        """21. generate-quote: Missing token -> 401"""
+        response = client.get("/api/generate-quote/ORD123")
+        self.assertEqual(response.status_code, 401)
+
+    @patch("auth_dependency.auth.verify_id_token")
+    def test_generate_quote_invalid_token_401(self, mock_verify):
+        """22. generate-quote: Invalid token -> 401"""
+        mock_verify.side_effect = Exception("Invalid token")
+        response = client.get("/api/generate-quote/ORD123", headers={"Authorization": "Bearer invalid_token"})
+        self.assertEqual(response.status_code, 401)
+
+    def test_generate_quote_firestore_error_500(self):
+        """23. generate-quote: Firestore error -> 500 Internal Server Error"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+        mock_db.collection.side_effect = Exception("DB Network Timeout Details")
+
+        response = client.get("/api/generate-quote/ORD123", headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn("DB Network Timeout Details", response.text)
+        self.assertEqual(response.json()["detail"], "Internal Server Error")
+
+    @patch("main.generate_cart_pdf")
+    def test_generate_quote_pdf_error_500(self, mock_generate_pdf):
+        """24. generate-quote: PDF generation error -> 500 without leaking details"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        mock_doc.to_dict.return_value = {
+            "owner_uid": "user_123",
+            "cart": {"items": []}
+        }
+        mock_db.collection.return_value.document.return_value.get.return_value = mock_doc
+        mock_generate_pdf.side_effect = Exception("FPDF layout rendering bug details")
+
+        response = client.get("/api/generate-quote/ORD123", headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn("FPDF layout rendering bug details", response.text)
+        self.assertEqual(response.json()["detail"], "Internal Server Error")
+
+    def test_generate_quote_legacy_order_no_owner_uid_403(self):
+        """25. generate-quote: Legacy order without owner_uid -> 403 Forbidden"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        mock_doc.to_dict.return_value = {
+            "user_email": "user@example.com"
+        }
+        mock_db.collection.return_value.document.return_value.get.return_value = mock_doc
+
+        response = client.get("/api/generate-quote/ORD123", headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["detail"], "Forbidden")
+
 if __name__ == "__main__":
     unittest.main()
