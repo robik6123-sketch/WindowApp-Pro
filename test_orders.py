@@ -468,5 +468,20 @@ class TestOrdersRoute(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.json()["detail"], "Forbidden")
 
+    def test_migrate_endpoint_removed(self):
+        """26. migrate: POST /api/migrate endpoint is removed, not registered, and returns 404"""
+        from starlette.routing import Route
+        # 1. Verify it is not registered in FastAPI routes
+        has_post_migrate = False
+        for route in main.app.routes:
+            if isinstance(route, Route) and route.path == "/api/migrate" and "POST" in route.methods:
+                has_post_migrate = True
+                break
+        self.assertFalse(has_post_migrate)
+
+        # 2. Verify that POST request returns 404
+        response = client.post("/api/migrate")
+        self.assertEqual(response.status_code, 404)
+
 if __name__ == "__main__":
     unittest.main()

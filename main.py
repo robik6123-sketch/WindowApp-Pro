@@ -144,25 +144,6 @@ async def get_user_orders(current_user: dict = Depends(verify_firebase_token)):
     except Exception:
         raise HTTPException(status_code=503, detail="Service Unavailable")
 
-@app.post("/api/migrate")
-async def migrate():
-    """Endpoint to migrate local materials.json to Firestore"""
-    if not USE_FIRESTORE:
-        return {"status": "error", "message": "Firestore is not enabled"}
-
-    try:
-        with open("materials.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-
-        # Sync each category
-        for category in ["profiles", "fillings", "hardware", "extras", "colors"]:
-            if category in data:
-                app.state.db.collection('materials').document(category).set(data[category])
-
-        return {"status": "success", "message": "Data migrated to Firestore"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8080))
