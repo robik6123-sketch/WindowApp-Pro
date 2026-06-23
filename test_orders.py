@@ -483,5 +483,67 @@ class TestOrdersRoute(unittest.TestCase):
         response = client.post("/api/migrate")
         self.assertEqual(response.status_code, 404)
 
+    @patch("main.calc.calculate_project")
+    @patch("auth_dependency.auth.verify_id_token")
+    def test_calculate_missing_token_401(self, mock_verify, mock_calc_project):
+        """27. calculate: Missing Authorization header -> 401, calculate_project not called"""
+        response = client.post("/api/calculate", json={"width": 1000, "height": 1000})
+        self.assertEqual(response.status_code, 401)
+        mock_calc_project.assert_not_called()
+
+    @patch("main.calc.calculate_project")
+    @patch("auth_dependency.auth.verify_id_token")
+    def test_calculate_non_bearer_token_401(self, mock_verify, mock_calc_project):
+        """28. calculate: Schema is not Bearer -> 401, calculate_project not called"""
+        response = client.post("/api/calculate", json={"width": 1000, "height": 1000}, headers={"Authorization": "Basic something"})
+        self.assertEqual(response.status_code, 401)
+        mock_calc_project.assert_not_called()
+
+    @patch("main.calc.calculate_project")
+    @patch("auth_dependency.auth.verify_id_token")
+    def test_calculate_invalid_token_401(self, mock_verify, mock_calc_project):
+        """29. calculate: Invalid token -> 401, calculate_project not called"""
+        mock_verify.side_effect = Exception("Invalid token")
+        response = client.post("/api/calculate", json={"width": 1000, "height": 1000}, headers={"Authorization": "Bearer invalid_token"})
+        self.assertEqual(response.status_code, 401)
+        mock_calc_project.assert_not_called()
+
+    @patch("main.calc.calculate_project")
+    @patch("auth_dependency.auth.verify_id_token")
+    def test_calculate_expired_token_401(self, mock_verify, mock_calc_project):
+        """30. calculate: Expired token -> 401, calculate_project not called"""
+        from firebase_admin.exceptions import FirebaseError
+        mock_verify.side_effect = FirebaseError(code="auth/id-token-expired", message="Token expired")
+        response = client.post("/api/calculate", json={"width": 1000, "height": 1000}, headers={"Authorization": "Bearer expired_token"})
+        self.assertEqual(response.status_code, 401)
+        mock_calc_project.assert_not_called()
+
+    @patch("main.calc.calculate_project")
+    def test_calculate_valid_token_success(self, mock_calc_project):
+        """31. calculate: Valid token -> 200, executes calculation exactly once with original order"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        dummy_result = {"price": 1200}
+        mock_calc_project.return_value = dummy_result
+
+        order_data = {"width": 1500, "height": 1200}
+        response = client.post("/api/calculate", json=order_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), dummy_result)
+        mock_calc_project.assert_called_once_with(order_data)
+
+    @patch("main.calc.calculate_project")
+    @patch("auth_dependency.auth.verify_id_token")
+    def test_calculate_ignores_client_user_email(self, mock_verify, mock_calc_project):
+        """32. calculate: Fake user_email in payload does not bypass auth, returns 401 when token is invalid"""
+        mock_verify.side_effect = Exception("Invalid token")
+
+        # Spoofed user_email in the payload, but token is invalid
+        order_data = {"width": 1000, "height": 1000, "user_email": "spoof@example.com"}
+        response = client.post("/api/calculate", json=order_data, headers={"Authorization": "Bearer invalid_token"})
+        self.assertEqual(response.status_code, 401)
+        mock_calc_project.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()

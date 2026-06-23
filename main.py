@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -45,17 +45,7 @@ async def root():
     return FileResponse("index.html")
 
 @app.post("/api/calculate")
-async def calculate(request: Request, order: dict):
-    # Try to get user from token if provided (optional for calc)
-    user_email = order.get("user_email")
-    auth_header = request.headers.get("Authorization")
-    if auth_header and auth_header.startswith("Bearer "):
-        try:
-            token = auth_header.split(" ")[1]
-            decoded = auth.verify_id_token(token)
-            user_email = decoded.get("email")
-        except: pass
-
+async def calculate(order: dict, current_user: dict = Depends(verify_firebase_token)):
     try:
         if order.get("width", 0) > 4000 or order.get("height", 0) > 3000:
             raise HTTPException(status_code=400, detail="Габарити перевищують інженерні норми")
