@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -12,6 +12,14 @@ from datetime import datetime
 import firebase_admin
 from firebase_admin import auth
 from auth_dependency import verify_firebase_token
+from user_settings_repository import (
+    UserSettingsRepository,
+    InvalidUIDError,
+    UserSettingsNotReadableError,
+    UserSettingsInvalidDocumentError,
+    UserSettingsWriteError
+)
+from settings_models import UserSettingsResponse, UserSettingsUpdate, UserSettingsStored
 
 app = FastAPI(title="WindowApp Pro API", version="2.0.0")
 security = HTTPBearer()
@@ -133,6 +141,87 @@ async def get_user_orders(current_user: dict = Depends(verify_firebase_token)):
         raise
     except Exception:
         raise HTTPException(status_code=503, detail="Service Unavailable")
+
+def get_authenticated_uid(current_user: dict) -> str:
+    uid = current_user.get("uid") if isinstance(current_user, dict) else None
+    if not isinstance(uid, str) or not uid.strip():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication context is invalid",
+        )
+    return uid
+
+def get_settings_repo() -> UserSettingsRepository:
+    db = getattr(calc, "db", None)
+    if not USE_FIRESTORE or db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="User settings are temporarily unavailable",
+        )
+    return UserSettingsRepository(db)
+
+def build_settings_response(
+    stored: UserSettingsStored,
+    *,
+    is_default: bool,
+) -> UserSettingsResponse:
+    return UserSettingsResponse(
+        **stored.model_dump(mode="python"),
+        is_default=is_default,
+    )
+
+@app.get("/api/settings", response_model=UserSettingsResponse)
+def get_settings(
+    current_user: dict = Depends(verify_firebase_token),
+    repo: UserSettingsRepository = Depends(get_settings_repo),
+) -> UserSettingsResponse:
+    uid = get_authenticated_uid(current_user)
+    try:
+        result = repo.get_user_settings(uid)
+    except InvalidUIDError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication context is invalid",
+        ) from exc
+    except UserSettingsNotReadableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="User settings are temporarily unavailable",
+        ) from exc
+    except UserSettingsInvalidDocumentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Stored user settings are invalid",
+        ) from exc
+
+    return build_settings_response(result.settings, is_default=result.is_default)
+
+@app.put("/api/settings", response_model=UserSettingsResponse)
+def put_settings(
+    settings: UserSettingsUpdate,
+    current_user: dict = Depends(verify_firebase_token),
+    repo: UserSettingsRepository = Depends(get_settings_repo),
+) -> UserSettingsResponse:
+    uid = get_authenticated_uid(current_user)
+    try:
+        stored = repo.save_user_settings(uid, settings)
+    except InvalidUIDError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication context is invalid",
+        ) from exc
+    except UserSettingsWriteError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Unable to save user settings",
+        ) from exc
+    except UserSettingsInvalidDocumentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Stored user settings are invalid",
+        ) from exc
+
+    return build_settings_response(stored, is_default=False)
 
 if __name__ == "__main__":
     import uvicorn
