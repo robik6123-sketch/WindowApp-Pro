@@ -364,5 +364,76 @@ class TestUserSettingsModels(unittest.TestCase):
         with self.assertRaises(ValidationError):
             MaterialPricingOverrides(profiles=large_dict)
 
+    def test_35_reject_bool_in_numeric_fields(self):
+        """35. Confirm reject_bool BeforeValidator rejects True/False but accepts valid numeric values."""
+        # 1. MaterialPricingOverrides - profile price
+        for val in [True, False]:
+            with self.assertRaises(ValidationError):
+                MaterialPricingOverrides(profiles={"REHAU": val})
+
+        # 2. ResolvedMaterialPrices - resolved price
+        for val in [True, False]:
+            with self.assertRaises(ValidationError):
+                ResolvedMaterialPrices(profiles={"REHAU": val})
+
+        # 3. AdditionalCostSettings.value
+        for val in [True, False]:
+            with self.assertRaises(ValidationError):
+                AdditionalCostSettings(
+                    id="cost",
+                    name="Cost",
+                    calculation_type="fixed_per_order",
+                    value=val
+                )
+
+        # 4. CommercialSettings.markup_rate
+        for val in [True, False]:
+            with self.assertRaises(ValidationError):
+                CommercialSettings(markup_rate=val)
+
+        # 5. CommercialSettings.discount_rate
+        for val in [True, False]:
+            with self.assertRaises(ValidationError):
+                CommercialSettings(discount_rate=val)
+
+        # 6. TaxProfileSettings.rate
+        for val in [True, False]:
+            with self.assertRaises(ValidationError):
+                TaxProfileSettings(rate=val)
+
+        # Confirm valid values are still accepted
+        valid_values = [100, 100.0, 0, 0.20, "100", "100.0"]
+        for val in valid_values:
+            # MaterialPricingOverrides
+            model_overrides = MaterialPricingOverrides(profiles={"REHAU": val})
+            self.assertEqual(model_overrides.profiles["REHAU"], float(val))
+
+            # ResolvedMaterialPrices
+            model_resolved = ResolvedMaterialPrices(profiles={"REHAU": val})
+            self.assertEqual(model_resolved.profiles["REHAU"], float(val))
+
+            # AdditionalCostSettings
+            model_cost = AdditionalCostSettings(
+                id="cost",
+                name="Cost",
+                calculation_type="fixed_per_order",
+                value=val
+            )
+            self.assertEqual(model_cost.value, float(val))
+
+            # CommercialSettings markup_rate
+            model_comm_markup = CommercialSettings(markup_rate=val)
+            self.assertEqual(model_comm_markup.markup_rate, float(val))
+
+        # CommercialSettings discount_rate (0.0 to 100.0)
+        for val in [100, 100.0, 0, 0.20, "100", "0.20"]:
+            model_comm_disc = CommercialSettings(discount_rate=val)
+            self.assertEqual(model_comm_disc.discount_rate, float(val))
+
+        # TaxProfileSettings rate (0.0 to 1.0)
+        for val in [0, 0.20, "0.20", 1, 1.0]:
+            model_tax = TaxProfileSettings(rate=val)
+            self.assertEqual(model_tax.rate, float(val))
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,7 +1,14 @@
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Literal
-from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+from typing import Dict, List, Literal, Annotated
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict, BeforeValidator
+
+def reject_bool(value):
+    if isinstance(value, bool):
+        raise ValueError("Boolean values are not allowed for numeric fields")
+    return value
+
+BusinessFloat = Annotated[float, BeforeValidator(reject_bool)]
 
 class BaseSettingsModel(BaseModel):
     model_config = ConfigDict(
@@ -17,14 +24,14 @@ class CalculationType(str, Enum):
     percent_of_materials = "percent_of_materials"
 
 class MaterialPricingOverrides(BaseSettingsModel):
-    profiles: Dict[str, float] = Field(default_factory=dict)
-    fillings: Dict[str, float] = Field(default_factory=dict)
-    hardware: Dict[str, float] = Field(default_factory=dict)
-    extras: Dict[str, float] = Field(default_factory=dict)
+    profiles: Dict[str, BusinessFloat] = Field(default_factory=dict)
+    fillings: Dict[str, BusinessFloat] = Field(default_factory=dict)
+    hardware: Dict[str, BusinessFloat] = Field(default_factory=dict)
+    extras: Dict[str, BusinessFloat] = Field(default_factory=dict)
 
     @field_validator("profiles", "fillings", "hardware", "extras")
     @classmethod
-    def validate_overrides(cls, v: Dict[str, float]) -> Dict[str, float]:
+    def validate_overrides(cls, v: Dict[str, BusinessFloat]) -> Dict[str, BusinessFloat]:
         if len(v) > 100:
             raise ValueError("Maximum of 100 overrides allowed per category")
         for key, price in v.items():
@@ -37,14 +44,14 @@ class MaterialPricingOverrides(BaseSettingsModel):
         return v
 
 class ResolvedMaterialPrices(BaseSettingsModel):
-    profiles: Dict[str, float] = Field(default_factory=dict)
-    fillings: Dict[str, float] = Field(default_factory=dict)
-    hardware: Dict[str, float] = Field(default_factory=dict)
-    extras: Dict[str, float] = Field(default_factory=dict)
+    profiles: Dict[str, BusinessFloat] = Field(default_factory=dict)
+    fillings: Dict[str, BusinessFloat] = Field(default_factory=dict)
+    hardware: Dict[str, BusinessFloat] = Field(default_factory=dict)
+    extras: Dict[str, BusinessFloat] = Field(default_factory=dict)
 
     @field_validator("profiles", "fillings", "hardware", "extras")
     @classmethod
-    def validate_prices(cls, v: Dict[str, float]) -> Dict[str, float]:
+    def validate_prices(cls, v: Dict[str, BusinessFloat]) -> Dict[str, BusinessFloat]:
         for key, price in v.items():
             if not key or key.isspace():
                 raise ValueError("Material ID cannot be empty or whitespace-only")
@@ -58,7 +65,7 @@ class AdditionalCostSettings(BaseSettingsModel):
     id: str = Field(..., min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
     name: str = Field(..., min_length=1, max_length=100)
     calculation_type: CalculationType
-    value: float = Field(..., ge=0.0)
+    value: BusinessFloat = Field(..., ge=0.0)
     enabled: bool = True
     sort_order: int = Field(default=0, ge=0, le=10000)
 
@@ -82,12 +89,12 @@ class AdditionalCostSettings(BaseSettingsModel):
         return self
 
 class CommercialSettings(BaseSettingsModel):
-    markup_rate: float = Field(default=0.0, ge=0.0, le=500.0)
-    discount_rate: float = Field(default=0.0, ge=0.0, le=100.0)
+    markup_rate: BusinessFloat = Field(default=0.0, ge=0.0, le=500.0)
+    discount_rate: BusinessFloat = Field(default=0.0, ge=0.0, le=100.0)
 
 class TaxProfileSettings(BaseSettingsModel):
     name: str = Field(default="Без податку", min_length=1, max_length=100)
-    rate: float = Field(default=0.0, ge=0.0, le=1.0)
+    rate: BusinessFloat = Field(default=0.0, ge=0.0, le=1.0)
     included_in_price: bool = Field(default=False)
 
     @field_validator("name")
