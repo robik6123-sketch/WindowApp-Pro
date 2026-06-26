@@ -3,7 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from calculator import WindowCalculator
+from calculator import (
+    WindowCalculator,
+    CalculatorPricingError,
+    UnknownMaterialError,
+    MissingResolvedPriceError
+)
+from pricing_context_provider import get_default_pricing_context
 from pdf_generator import generate_cart_pdf
 import os
 import json
@@ -100,10 +106,17 @@ async def calculate(order: CalculateRequest, current_user: dict = Depends(verify
             raise HTTPException(status_code=400, detail="Габарити перевищують інженерні норми")
 
         order_dict = order.model_dump(exclude_unset=True)
-        result = calc.calculate_project(order_dict)
+        pricing_context = get_default_pricing_context(calc.materials)
+        result = calc.calculate_project(order_dict, pricing_context)
         # We don't save to firestore here anymore, because this is just a calculation preview.
         # Saving happens in /api/create-order
         return result
+    except MissingResolvedPriceError as e:
+        raise HTTPException(status_code=500, detail="Внутрішня помилка розрахунку ціни")
+    except UnknownMaterialError as e:
+        raise HTTPException(status_code=400, detail="Невідомий матеріал або конфігурація")
+    except CalculatorPricingError as e:
+        raise HTTPException(status_code=500, detail="Помилка конфігурації калькулятора")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

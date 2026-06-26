@@ -1,6 +1,19 @@
 import json
 import math
 import os
+from settings_models import PricingContext
+
+class CalculatorPricingError(Exception):
+    """Base class for all calculator pricing errors."""
+    pass
+
+class UnknownMaterialError(CalculatorPricingError):
+    """Raised when a material ID is not present in the global catalog."""
+    pass
+
+class MissingResolvedPriceError(CalculatorPricingError):
+    """Raised when a material ID is valid but its price is missing from the PricingContext."""
+    pass
 
 try:
     import firebase_admin
@@ -168,7 +181,7 @@ class WindowCalculator:
                     
         return {"valid": is_valid, "messages": messages}
 
-    def calculate_project(self, payload: dict) -> dict:
+    def calculate_project(self, payload: dict, pricing_context: PricingContext) -> dict:
         validation = self.validate_order(payload)
         if not validation["valid"]:
             return {"status": "error", "message": "\n".join(validation["messages"])}
@@ -183,25 +196,32 @@ class WindowCalculator:
         color_key = payload.get("color", "white")
         panels = payload.get("panels", [{"type": "fixed", "proportion": 100.0}])
         v_sections = len(panels)
-        
-        custom_prices = payload.get("custom_prices", {})
 
         prof_data = self.materials.get("profiles", {}).get(profile_key, {})
+        if not prof_data:
+            raise UnknownMaterialError(f"Profile '{profile_key}' is not found in global catalog.")
+        if profile_key not in pricing_context.resolved_prices.profiles:
+            raise MissingResolvedPriceError(f"Profile price for '{profile_key}' is missing in PricingContext.")
+        prof_price = float(pricing_context.resolved_prices.profiles[profile_key])
+
         glass_data = self.materials.get("fillings", {}).get(glass_key, {})
+        if not glass_data:
+            raise UnknownMaterialError(f"Filling '{glass_key}' is not found in global catalog.")
+        if glass_key not in pricing_context.resolved_prices.fillings:
+            raise MissingResolvedPriceError(f"Filling price for '{glass_key}' is missing in PricingContext.")
+        glass_price = float(pricing_context.resolved_prices.fillings[glass_key])
+
         color_data = self.materials.get("colors", {}).get(color_key, {})
+        if not color_data:
+            raise UnknownMaterialError(f"Color '{color_key}' is not found in global catalog.")
+        if "price_multiplier" not in color_data:
+            raise CalculatorPricingError(f"Missing price_multiplier for color '{color_key}'.")
+        price_mult = color_data["price_multiplier"]
+        if isinstance(price_mult, bool) or not isinstance(price_mult, (int, float)) or not math.isfinite(price_mult) or price_mult < 0.0:
+            raise CalculatorPricingError(f"Invalid price_multiplier '{price_mult}' for color '{color_key}'.")
+        color_multiplier = float(price_mult)
         
         is_aluminum = prof_data.get("material_type") == "aluminum"
-
-        def _get_price(val, default):
-            try:
-                if val is not None and str(val).strip() != "":
-                    return float(val)
-                return default
-            except:
-                return default
-
-        prof_price = _get_price(custom_prices.get("profile_price"), prof_data.get("price_per_m", 200.0))
-        glass_price = _get_price(custom_prices.get("glass_price"), glass_data.get("price_per_m2", 800.0))
 
         # Geometry Logic
         frame_perimeter = (width + height) * 2
@@ -217,7 +237,11 @@ class WindowCalculator:
             glass_area_total = rect_area + (segment_area / 1_000_000.0)
             
             # Bending extra cost
-            base_bending = self.materials.get("extras", {}).get("bending", {}).get("price_per_m", 600.0)
+            if "bending" not in self.materials.get("extras", {}):
+                raise UnknownMaterialError("Extra 'bending' is not found in global catalog.")
+            if "bending" not in pricing_context.resolved_prices.extras:
+                raise MissingResolvedPriceError("Extra price for 'bending' is missing in PricingContext.")
+            base_bending = float(pricing_context.resolved_prices.extras["bending"])
             bend_multiplier = 2.5 if is_aluminum else 1.5
             bending_cost = (arc_len / 1000.0) * base_bending * bend_multiplier
 
@@ -240,17 +264,23 @@ class WindowCalculator:
                 base_hw = "tilt_turn" if "tilt_turn" in ptype else "turn"
                 if "door" in ptype: base_hw = "door_lock_strip"
                 
-                # Try to get from materials
-                hw_data = self.materials.get("hardware", {}).get(base_hw)
-                if not hw_data:
-                    # Fallback to general 'hardware' entry or hardcoded default
-                    hw_data = self.materials.get("hardware", {}).get("standard", {"price": 650.0})
+                # Check hardware in catalog
+                if base_hw not in self.materials.get("hardware", {}):
+                    raise UnknownMaterialError(f"Hardware '{base_hw}' is not found in global catalog.")
+                if base_hw not in pricing_context.resolved_prices.hardware:
+                    raise MissingResolvedPriceError(f"Hardware price for '{base_hw}' is missing in PricingContext.")
                 
-                hardware_list.append(hw_data.get("name", base_hw))
-                hardware_cost += _get_price(custom_prices.get("hardware_price"), hw_data.get("price", 650.0))
+                hw_price = float(pricing_context.resolved_prices.hardware[base_hw])
+                hw_name = self.materials.get("hardware", {}).get(base_hw, {}).get("name", base_hw)
+                hardware_list.append(hw_name)
+                hardware_cost += hw_price
 
             if panel.get("mosquito", False):
-                net_price = self.materials.get("extras", {}).get("mosquito_net", {}).get("price_per_m2", 400.0)
+                if "mosquito_net" not in self.materials.get("extras", {}):
+                    raise UnknownMaterialError("Extra 'mosquito_net' is not found in global catalog.")
+                if "mosquito_net" not in pricing_context.resolved_prices.extras:
+                    raise MissingResolvedPriceError("Extra price for 'mosquito_net' is missing in PricingContext.")
+                net_price = float(pricing_context.resolved_prices.extras["mosquito_net"])
                 # For arched windows, net area is usually the rectangular part + half arch
                 net_h = height - (arc_height/2 if is_arched else 0)
                 net_area = (panel_w * net_h) / 1_000_000.0
@@ -261,28 +291,41 @@ class WindowCalculator:
         sill_width = payload.get("sill_width", 0.0)
         sill_cost = 0.0
         if sill_len > 0 and sill_width > 0:
-            sill_data = self.materials.get("extras", {}).get("sill", {})
-            sill_cost = (sill_len * sill_width / 1_000_000.0) * sill_data.get("price_per_m2", 600.0)
+            if "sill" not in self.materials.get("extras", {}):
+                raise UnknownMaterialError("Extra 'sill' is not found in global catalog.")
+            if "sill" not in pricing_context.resolved_prices.extras:
+                raise MissingResolvedPriceError("Extra price for 'sill' is missing in PricingContext.")
+            sill_price = float(pricing_context.resolved_prices.extras["sill"])
+            sill_cost = (sill_len * sill_width / 1_000_000.0) * sill_price
 
         board_type = payload.get("window_board", "none")
         board_len = payload.get("window_board_length", 0.0)
         board_depth = payload.get("window_board_depth", 0.0)
         board_cost = 0.0
         if board_type != "none" and board_len > 0:
-            board_data = self.materials.get("extras", {}).get(board_type, {})
-            board_cost = (board_len * board_depth / 1_000_000.0) * board_data.get("price_per_m2", 0.0)
+            if board_type not in self.materials.get("extras", {}):
+                raise UnknownMaterialError(f"Extra window board '{board_type}' is not found in global catalog.")
+            if board_type not in pricing_context.resolved_prices.extras:
+                raise MissingResolvedPriceError(f"Extra price for window board '{board_type}' is missing in PricingContext.")
+            board_price = float(pricing_context.resolved_prices.extras[board_type])
+            board_cost = (board_len * board_depth / 1_000_000.0) * board_price
 
-        color_multiplier = color_data.get("price_multiplier", 1.0)
         profile_total_cost = (total_profile_mm / 1000.0) * prof_price * color_multiplier
         glass_total_cost = glass_area_total * glass_price
         
         subtotal = profile_total_cost + glass_total_cost + hardware_cost + mosquito_nets_cost + sill_cost + board_cost + bending_cost
         
-        tax_id = payload.get("tax_profile_id", "no_tax")
-        tax_profile = self.taxes.get(tax_id, self.taxes.get("no_tax", {}))
-        tax_rate = tax_profile.get("rate", 0.0)
+        tax_profile = pricing_context.tax_profile
+        tax_rate = tax_profile.rate
         vat_amount = subtotal * tax_rate
         final_total = subtotal + vat_amount
+
+        # Look up legal reference from global self.taxes by exact name & rate match
+        legal_ref = ""
+        for t_id, t_entry in self.taxes.items():
+            if t_entry.get("name") == tax_profile.name and t_entry.get("rate") == tax_profile.rate:
+                legal_ref = t_entry.get("legal_reference", "")
+                break
 
         # Calculate technical metrics
         prof_weight_per_m = prof_data.get("weight_per_m", 1.2)
@@ -290,7 +333,7 @@ class WindowCalculator:
         
         total_weight = (total_profile_mm / 1000.0) * prof_weight_per_m + (glass_area_total * glass_weight_per_m2)
         
-        # Hardware adds a little bit of weight (approx 1kg per sash)
+        # Hardware adds a little bit of weight (approx 1.5kg per sash)
         hardware_weight = sum([1.5 for p in panels if p.get("type", "fixed") != "fixed"])
         total_weight += hardware_weight
 
@@ -298,7 +341,7 @@ class WindowCalculator:
             "status": "success",
             "net_price": round(subtotal, 2),
             "vat_amount": round(vat_amount, 2),
-            "legal_reference": tax_profile.get("legal_reference", ""),
+            "legal_reference": legal_ref,
             "metrics": {
                 "area": round(glass_area_total, 4),
                 "perimeter": round(frame_perimeter / 1000.0, 2),

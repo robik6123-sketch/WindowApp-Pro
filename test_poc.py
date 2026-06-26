@@ -1,5 +1,6 @@
 import json
 from calculator import WindowCalculator
+from pricing_context_provider import get_default_pricing_context
 from reporter import send_technical_report
 
 def run_poc():
@@ -22,7 +23,8 @@ def run_poc():
     # 2. Виконання розрахунку (запускається тільки якщо валідно)
     calc_result = None
     if validation_result["valid"]:
-        calc_result = calc.calculate_project(payload)
+        pricing_context = get_default_pricing_context(calc.materials)
+        calc_result = calc.calculate_project(payload, pricing_context)
         
     # 3. Генерація звітів
     res_tg = send_technical_report(payload, validation_result, calc_result, channel='telegram')

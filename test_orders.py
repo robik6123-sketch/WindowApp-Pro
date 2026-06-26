@@ -531,7 +531,11 @@ class TestOrdersRoute(unittest.TestCase):
         response = client.post("/api/calculate", json=order_data, headers={"Authorization": "Bearer valid_token"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), dummy_result)
-        mock_calc_project.assert_called_once_with(order_data)
+        mock_calc_project.assert_called_once()
+        args, kwargs = mock_calc_project.call_args
+        self.assertEqual(args[0], order_data)
+        from settings_models import PricingContext
+        self.assertIsInstance(args[1], PricingContext)
 
     @patch("main.calc.calculate_project")
     @patch("auth_dependency.auth.verify_id_token")
@@ -556,7 +560,10 @@ class TestOrdersRoute(unittest.TestCase):
         minimal_payload = {"width": 1200, "height": 1400}
         response = client.post("/api/calculate", json=minimal_payload, headers={"Authorization": "Bearer valid_token"})
         self.assertEqual(response.status_code, 200)
-        mock_calc_project.assert_called_with(minimal_payload)
+        args, kwargs = mock_calc_project.call_args
+        self.assertEqual(args[0], minimal_payload)
+        from settings_models import PricingContext
+        self.assertIsInstance(args[1], PricingContext)
 
         # 2. Full legitimate payload
         full_payload = {
@@ -597,7 +604,9 @@ class TestOrdersRoute(unittest.TestCase):
             "window_board_length": 1400.0,
             "window_board_depth": 200.0
         }
-        mock_calc_project.assert_called_with(expected_full)
+        args, kwargs = mock_calc_project.call_args
+        self.assertEqual(args[0], expected_full)
+        self.assertIsInstance(args[1], PricingContext)
 
         # 3. Arch structure payload
         arch_payload = {
@@ -608,19 +617,25 @@ class TestOrdersRoute(unittest.TestCase):
         }
         response = client.post("/api/calculate", json=arch_payload, headers={"Authorization": "Bearer valid_token"})
         self.assertEqual(response.status_code, 200)
-        mock_calc_project.assert_called_with(arch_payload)
+        args, kwargs = mock_calc_project.call_args
+        self.assertEqual(args[0], arch_payload)
+        self.assertIsInstance(args[1], PricingContext)
 
         # 4. Numeric strings in payload are coerced to float
         numeric_strings_payload = {"width": "1200.5", "height": "1400"}
         response = client.post("/api/calculate", json=numeric_strings_payload, headers={"Authorization": "Bearer valid_token"})
         self.assertEqual(response.status_code, 200)
-        mock_calc_project.assert_called_with({"width": 1200.5, "height": 1400.0})
+        args, kwargs = mock_calc_project.call_args
+        self.assertEqual(args[0], {"width": 1200.5, "height": 1400.0})
+        self.assertIsInstance(args[1], PricingContext)
 
         # 5. Explicit null (None) values
         null_payload = {"width": 1000.0, "height": 1000.0, "arc_height": None}
         response = client.post("/api/calculate", json=null_payload, headers={"Authorization": "Bearer valid_token"})
         self.assertEqual(response.status_code, 200)
-        mock_calc_project.assert_called_with({"width": 1000.0, "height": 1000.0, "arc_height": None})
+        args, kwargs = mock_calc_project.call_args
+        self.assertEqual(args[0], {"width": 1000.0, "height": 1000.0, "arc_height": None})
+        self.assertIsInstance(args[1], PricingContext)
 
         # 6. Verify calculator receives a plain dict, not a Pydantic object
         called_arg = mock_calc_project.call_args[0][0]
@@ -712,7 +727,11 @@ class TestOrdersRoute(unittest.TestCase):
             payload = {"width": 1000, "height": 1000, "type": "rectangular", "arc_height": None}
             response = client.post("/api/calculate", json=payload, headers={"Authorization": "Bearer valid_token"})
             self.assertEqual(response.status_code, 200)
-            mock_calc_project.assert_called_once_with(payload)
+            mock_calc_project.assert_called_once()
+            args, kwargs = mock_calc_project.call_args
+            self.assertEqual(args[0], payload)
+            from settings_models import PricingContext
+            self.assertIsInstance(args[1], PricingContext)
 
         # 4. Absent sill/window-board numeric fields -> valid, not in dict sent to calculator
         with self.subTest(absent_numeric_fields=True):
@@ -770,6 +789,50 @@ class TestOrdersRoute(unittest.TestCase):
                 errors = response.json().get("detail", [])
                 self.assertTrue(any(field in str(err.get("loc", [])) for err in errors), f"Error should mention {field}")
                 mock_calc_project.assert_not_called()
+
+    @patch("main.calc.calculate_project")
+    def test_calculate_missing_resolved_price_error_mapping(self, mock_calc_project):
+        """calculate: MissingResolvedPriceError -> 500, safe generic message"""
+        from calculator import MissingResolvedPriceError
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+        mock_calc_project.side_effect = MissingResolvedPriceError("SECRET internal price id")
+
+        payload = {"width": 1000, "height": 1000}
+        response = client.post("/api/calculate", json=payload, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["detail"], "Внутрішня помилка розрахунку ціни")
+        self.assertNotIn("SECRET", response.text)
+        self.assertNotIn("internal price id", response.text)
+
+    @patch("main.calc.calculate_project")
+    def test_calculate_unknown_material_error_mapping(self, mock_calc_project):
+        """calculate: UnknownMaterialError -> 400, safe generic message"""
+        from calculator import UnknownMaterialError
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+        mock_calc_project.side_effect = UnknownMaterialError("SECRET unknown profile WDS_X")
+
+        payload = {"width": 1000, "height": 1000}
+        response = client.post("/api/calculate", json=payload, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "Невідомий матеріал або конфігурація")
+        self.assertNotIn("SECRET", response.text)
+        self.assertNotIn("WDS_X", response.text)
+
+    @patch("main.calc.calculate_project")
+    def test_calculate_calculator_pricing_error_mapping(self, mock_calc_project):
+        """calculate: CalculatorPricingError -> 500, safe generic message"""
+        from calculator import CalculatorPricingError
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+        mock_calc_project.side_effect = CalculatorPricingError("SECRET malformed multiplier")
+
+        payload = {"width": 1000, "height": 1000}
+        response = client.post("/api/calculate", json=payload, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["detail"], "Помилка конфігурації калькулятора")
+        self.assertNotIn("SECRET", response.text)
 
 if __name__ == "__main__":
     unittest.main()
