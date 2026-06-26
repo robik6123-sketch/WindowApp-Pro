@@ -19,7 +19,48 @@ from user_settings_repository import (
     UserSettingsInvalidDocumentError,
     UserSettingsWriteError
 )
-from settings_models import UserSettingsResponse, UserSettingsUpdate, UserSettingsStored
+from settings_models import UserSettingsResponse, UserSettingsUpdate, UserSettingsStored, BusinessFloat
+from typing import List, Optional, Literal
+from pydantic import BaseModel, Field, ConfigDict, model_validator
+
+class PanelRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        allow_inf_nan=False,
+    )
+    proportion: BusinessFloat = Field(default=100.0)
+    type: str = Field(default="fixed")
+    mosquito: bool = Field(default=False)
+
+class CalculateRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        allow_inf_nan=False,
+    )
+    width: BusinessFloat
+    height: BusinessFloat
+    type: str = Field(default="rectangular")
+    arc_height: Optional[BusinessFloat] = Field(default=None)
+    material_type: str = Field(default="pvc")
+    profile: str = Field(default="REHAU_Euro_70")
+    glass: str = Field(default="glass_24")
+    color: str = Field(default="white")
+    panels: List[PanelRequest] = Field(
+        default_factory=lambda: [PanelRequest(proportion=100.0, type="fixed")]
+    )
+    sill_length: BusinessFloat = Field(default=0.0)
+    sill_width: BusinessFloat = Field(default=0.0)
+    window_board: str = Field(default="none")
+    window_board_length: BusinessFloat = Field(default=0.0)
+    window_board_depth: BusinessFloat = Field(default=0.0)
+
+    @model_validator(mode="after")
+    def validate_arched_height(self) -> 'CalculateRequest':
+        if self.type == "arched":
+            if self.arc_height is None:
+                raise ValueError("arc_height is required and cannot be null when type is arched")
+        return self
+
 
 app = FastAPI(title="WindowApp Pro API", version="2.0.0")
 security = HTTPBearer()
@@ -53,12 +94,13 @@ async def root():
     return FileResponse("index.html")
 
 @app.post("/api/calculate")
-async def calculate(order: dict, current_user: dict = Depends(verify_firebase_token)):
+async def calculate(order: CalculateRequest, current_user: dict = Depends(verify_firebase_token)):
     try:
-        if order.get("width", 0) > 4000 or order.get("height", 0) > 3000:
+        if order.width > 4000 or order.height > 3000:
             raise HTTPException(status_code=400, detail="Габарити перевищують інженерні норми")
 
-        result = calc.calculate_project(order)
+        order_dict = order.model_dump(exclude_unset=True)
+        result = calc.calculate_project(order_dict)
         # We don't save to firestore here anymore, because this is just a calculation preview.
         # Saving happens in /api/create-order
         return result

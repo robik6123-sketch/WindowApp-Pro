@@ -254,10 +254,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const headers = { 'Content-Type': 'application/json' };
             if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
 
+            // Create a clean shallow copy of the payload for the calculation request.
+            // Remove pricing overrides (custom_prices), identity data (user_email), and sketches (images) to comply with CalculateRequest.
+            const calcPayload = { ...payload };
+            delete calcPayload.custom_prices;
+            delete calcPayload.user_email;
+            delete calcPayload.images;
+
             const response = await fetch(`${API_URL}/api/calculate`, {
                 method: 'POST',
                 headers: headers,
-                body: JSON.stringify(payload)
+                body: JSON.stringify(calcPayload)
             });
 
             const data = await response.json();

@@ -545,5 +545,231 @@ class TestOrdersRoute(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
         mock_calc_project.assert_not_called()
 
+    @patch("main.calc.calculate_project")
+    def test_calculate_valid_payload_variations(self, mock_calc_project):
+        """33. calculate: Test variations of valid payloads"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+        mock_calc_project.return_value = {"status": "success"}
+
+        # 1. Minimal payload
+        minimal_payload = {"width": 1200, "height": 1400}
+        response = client.post("/api/calculate", json=minimal_payload, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+        mock_calc_project.assert_called_with(minimal_payload)
+
+        # 2. Full legitimate payload
+        full_payload = {
+            "width": 1500,
+            "height": 1300,
+            "type": "rectangular",
+            "material_type": "pvc",
+            "profile": "REHAU_Euro_70",
+            "glass": "glass_24",
+            "color": "white",
+            "panels": [
+                {"proportion": 50.0, "type": "fixed", "mosquito": False},
+                {"proportion": 50.0, "type": "turn_left", "mosquito": True}
+            ],
+            "sill_length": 1400.0,
+            "sill_width": 150.0,
+            "window_board": "window_board_plastolit_matte",
+            "window_board_length": 1400.0,
+            "window_board_depth": 200.0
+        }
+        response = client.post("/api/calculate", json=full_payload, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+        expected_full = {
+            "width": 1500.0,
+            "height": 1300.0,
+            "type": "rectangular",
+            "material_type": "pvc",
+            "profile": "REHAU_Euro_70",
+            "glass": "glass_24",
+            "color": "white",
+            "panels": [
+                {"proportion": 50.0, "type": "fixed", "mosquito": False},
+                {"proportion": 50.0, "type": "turn_left", "mosquito": True}
+            ],
+            "sill_length": 1400.0,
+            "sill_width": 150.0,
+            "window_board": "window_board_plastolit_matte",
+            "window_board_length": 1400.0,
+            "window_board_depth": 200.0
+        }
+        mock_calc_project.assert_called_with(expected_full)
+
+        # 3. Arch structure payload
+        arch_payload = {
+            "width": 1000.0,
+            "height": 1500.0,
+            "type": "arched",
+            "arc_height": 300.0
+        }
+        response = client.post("/api/calculate", json=arch_payload, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+        mock_calc_project.assert_called_with(arch_payload)
+
+        # 4. Numeric strings in payload are coerced to float
+        numeric_strings_payload = {"width": "1200.5", "height": "1400"}
+        response = client.post("/api/calculate", json=numeric_strings_payload, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+        mock_calc_project.assert_called_with({"width": 1200.5, "height": 1400.0})
+
+        # 5. Explicit null (None) values
+        null_payload = {"width": 1000.0, "height": 1000.0, "arc_height": None}
+        response = client.post("/api/calculate", json=null_payload, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+        mock_calc_project.assert_called_with({"width": 1000.0, "height": 1000.0, "arc_height": None})
+
+        # 6. Verify calculator receives a plain dict, not a Pydantic object
+        called_arg = mock_calc_project.call_args[0][0]
+        self.assertIsInstance(called_arg, dict)
+
+    @patch("main.calc.calculate_project")
+    def test_calculate_rejects_client_controlled_fields_with_422(self, mock_calc_project):
+        """34. calculate: Rejects pricing, commercial, identity, metadata, and unknown fields with 422"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        forbidden_fields = [
+            "custom_prices", "tax_profile_id", "markup", "markup_rate",
+            "discount", "discount_rate", "tax", "tax_profile",
+            "additional_costs", "uid", "owner_uid", "email",
+            "user_email", "schema_version", "updated_at",
+            "pricing_context", "resolved_prices", "is_default",
+            "images", "unexpected_client_field"
+        ]
+
+        for field in forbidden_fields:
+            with self.subTest(forbidden_field=field):
+                payload = {
+                    "width": 1000,
+                    "height": 1000,
+                    field: {} if field in ["custom_prices", "resolved_prices", "pricing_context", "tax_profile", "images"] else "some_val"
+                }
+                response = client.post("/api/calculate", json=payload, headers={"Authorization": "Bearer valid_token"})
+                self.assertEqual(response.status_code, 422, f"Field '{field}' should have been rejected with 422")
+
+        # Unknown nested field in panels
+        with self.subTest(nested_field="unknown_nested_field"):
+            payload = {
+                "width": 1000,
+                "height": 1000,
+                "panels": [{"proportion": 100, "unknown_field": "error"}]
+            }
+            response = client.post("/api/calculate", json=payload, headers={"Authorization": "Bearer valid_token"})
+            self.assertEqual(response.status_code, 422)
+
+        # Boolean in numeric field width
+        with self.subTest(coercion="bool_in_width"):
+            payload = {"width": True, "height": 1000}
+            response = client.post("/api/calculate", json=payload, headers={"Authorization": "Bearer valid_token"})
+            self.assertEqual(response.status_code, 422)
+
+        # NaN / Infinity rejection
+        for bad_val in ["NaN", "Infinity", "-Infinity"]:
+            with self.subTest(coercion=f"bad_float_{bad_val}"):
+                payload = {"width": bad_val, "height": 1000}
+                response = client.post("/api/calculate", json=payload, headers={"Authorization": "Bearer valid_token"})
+                self.assertEqual(response.status_code, 422)
+
+        mock_calc_project.assert_not_called()
+
+    @patch("main.calc.calculate_project")
+    def test_calculate_explicit_null_handling_fix(self, mock_calc_project):
+        """35. calculate: Test explicit null and conditional arched validation constraints"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+        mock_calc_project.return_value = {"status": "success"}
+
+        null_fields = ["sill_length", "sill_width", "window_board_length", "window_board_depth"]
+
+        # 1. Explicit null -> HTTP 422 for sill_length, sill_width, window_board_length, window_board_depth
+        for field in null_fields:
+            with self.subTest(null_field=field):
+                mock_calc_project.reset_mock()
+                payload = {"width": 1000, "height": 1000, field: None}
+                response = client.post("/api/calculate", json=payload, headers={"Authorization": "Bearer valid_token"})
+                self.assertEqual(response.status_code, 422)
+                errors = response.json().get("detail", [])
+                self.assertTrue(any(field in str(err.get("loc", [])) for err in errors), f"Error should mention {field}")
+                mock_calc_project.assert_not_called()
+
+        # 2. Arched + arc_height null -> HTTP 422
+        with self.subTest(arched_null_arc_height=True):
+            mock_calc_project.reset_mock()
+            payload = {"width": 1000, "height": 1000, "type": "arched", "arc_height": None}
+            response = client.post("/api/calculate", json=payload, headers={"Authorization": "Bearer valid_token"})
+            self.assertEqual(response.status_code, 422)
+            errors = response.json().get("detail", [])
+            self.assertTrue(any("arc_height" in str(err) or "arched" in str(err) for err in errors))
+            mock_calc_project.assert_not_called()
+
+        # 3. Rectangular + arc_height null -> valid request (calculator gets plain dict with arc_height=None)
+        with self.subTest(rectangular_null_arc_height=True):
+            mock_calc_project.reset_mock()
+            payload = {"width": 1000, "height": 1000, "type": "rectangular", "arc_height": None}
+            response = client.post("/api/calculate", json=payload, headers={"Authorization": "Bearer valid_token"})
+            self.assertEqual(response.status_code, 200)
+            mock_calc_project.assert_called_once_with(payload)
+
+        # 4. Absent sill/window-board numeric fields -> valid, not in dict sent to calculator
+        with self.subTest(absent_numeric_fields=True):
+            mock_calc_project.reset_mock()
+            payload = {"width": 1000, "height": 1000}
+            response = client.post("/api/calculate", json=payload, headers={"Authorization": "Bearer valid_token"})
+            self.assertEqual(response.status_code, 200)
+            called_dict = mock_calc_project.call_args[0][0]
+            for field in null_fields:
+                self.assertNotIn(field, called_dict)
+
+        # 5. Explicit zero for each numeric field -> valid request, calculator gets 0.0
+        with self.subTest(explicit_zero=True):
+            mock_calc_project.reset_mock()
+            payload = {
+                "width": 1000,
+                "height": 1000,
+                "sill_length": 0,
+                "sill_width": 0.0,
+                "window_board_length": 0,
+                "window_board_depth": 0.0
+            }
+            response = client.post("/api/calculate", json=payload, headers={"Authorization": "Bearer valid_token"})
+            self.assertEqual(response.status_code, 200)
+            called_dict = mock_calc_project.call_args[0][0]
+            for field in null_fields:
+                self.assertEqual(called_dict[field], 0.0)
+
+        # 6. Numeric string for these fields -> coerced to float
+        with self.subTest(numeric_string_coercion=True):
+            mock_calc_project.reset_mock()
+            payload = {
+                "width": 1000,
+                "height": 1000,
+                "sill_length": "1200.5",
+                "sill_width": "150",
+                "window_board_length": "1400",
+                "window_board_depth": "200.5"
+            }
+            response = client.post("/api/calculate", json=payload, headers={"Authorization": "Bearer valid_token"})
+            self.assertEqual(response.status_code, 200)
+            called_dict = mock_calc_project.call_args[0][0]
+            self.assertEqual(called_dict["sill_length"], 1200.5)
+            self.assertEqual(called_dict["sill_width"], 150.0)
+            self.assertEqual(called_dict["window_board_length"], 1400.0)
+            self.assertEqual(called_dict["window_board_depth"], 200.5)
+
+        # 7. Bool for these fields -> HTTP 422
+        for field in null_fields:
+            with self.subTest(bool_in_field=field):
+                mock_calc_project.reset_mock()
+                payload = {"width": 1000, "height": 1000, field: True}
+                response = client.post("/api/calculate", json=payload, headers={"Authorization": "Bearer valid_token"})
+                self.assertEqual(response.status_code, 422)
+                errors = response.json().get("detail", [])
+                self.assertTrue(any(field in str(err.get("loc", [])) for err in errors), f"Error should mention {field}")
+                mock_calc_project.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
