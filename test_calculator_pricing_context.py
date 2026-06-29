@@ -217,14 +217,37 @@ class TestCalculatorPricingContext(unittest.TestCase):
         res = self.calc.calculate_project(payload, self.ctx)
         self.assertEqual(res["vat_amount"], 0.0)
 
-    def test_included_in_price_does_not_change_formula(self):
+    def test_included_in_price_extracts_tax_from_gross_total(self):
         payload = self.get_minimal_payload()
         self.ctx.tax_profile = TaxProfileSettings(name="ПДВ", rate=0.20, included_in_price=True)
-        res1 = self.calc.calculate_project(payload, self.ctx)
+        res_inc = self.calc.calculate_project(payload, self.ctx)
+
         self.ctx.tax_profile = TaxProfileSettings(name="ПДВ", rate=0.20, included_in_price=False)
-        res2 = self.calc.calculate_project(payload, self.ctx)
-        self.assertEqual(res1["vat_amount"], res2["vat_amount"])
-        self.assertEqual(res1["cost_details"]["total"], res2["cost_details"]["total"])
+        res_exc = self.calc.calculate_project(payload, self.ctx)
+
+        # In included-tax mode: total is the adjusted subtotal
+        self.assertEqual(res_inc["cost_details"]["total"], res_inc["commercial_breakdown"]["adjusted_subtotal"])
+
+        # VAT is extracted via reverse tax formula: total * rate / (1.0 + rate)
+        expected_vat = round(res_inc["cost_details"]["total"] * 0.20 / 1.20, 2)
+        self.assertEqual(res_inc["vat_amount"], expected_vat)
+
+        # net = total - VAT
+        expected_net = round(res_inc["cost_details"]["total"] - expected_vat, 2)
+        self.assertEqual(res_inc["net_price"], expected_net)
+        self.assertEqual(round(res_inc["net_price"] + res_inc["vat_amount"], 2), res_inc["cost_details"]["total"])
+
+        # Result should differ from excluded-tax mode
+        self.assertNotEqual(res_inc["vat_amount"], res_exc["vat_amount"])
+        self.assertNotEqual(res_inc["net_price"], res_exc["net_price"])
+        self.assertEqual(res_inc["cost_details"]["total"], res_exc["net_price"])
+
+        # commercial_breakdown keys check
+        self.assertTrue(res_inc["commercial_breakdown"]["tax_included"])
+        self.assertEqual(res_inc["net_price"], res_inc["commercial_breakdown"]["net_price"])
+        self.assertEqual(res_inc["vat_amount"], res_inc["commercial_breakdown"]["vat_amount"])
+
+
 
     def test_known_legal_reference_mapping(self):
         payload = self.get_minimal_payload()

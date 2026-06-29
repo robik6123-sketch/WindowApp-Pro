@@ -313,12 +313,110 @@ class WindowCalculator:
         profile_total_cost = (total_profile_mm / 1000.0) * prof_price * color_multiplier
         glass_total_cost = glass_area_total * glass_price
         
-        subtotal = profile_total_cost + glass_total_cost + hardware_cost + mosquito_nets_cost + sill_cost + board_cost + bending_cost
-        
+        # Materials Subtotal
+        materials_subtotal = round(
+            profile_total_cost +
+            glass_total_cost +
+            hardware_cost +
+            mosquito_nets_cost +
+            sill_cost +
+            board_cost +
+            bending_cost,
+            2
+        )
+
+        # Duplicate ID Guard
+        additional_cost_ids = [cost.id for cost in pricing_context.additional_costs]
+        if len(additional_cost_ids) != len(set(additional_cost_ids)):
+            raise CalculatorPricingError("Duplicate additional cost IDs found in PricingContext")
+
+        # Stable sorting of enabled costs
+        enabled_costs = []
+        for idx, cost in enumerate(pricing_context.additional_costs):
+            if cost.enabled:
+                enabled_costs.append((idx, cost))
+        sorted_enabled_costs_tuples = sorted(enabled_costs, key=lambda x: (x[1].sort_order, x[0]))
+
+        additional_costs_total = 0.0
+        additional_costs_breakdown = []
+
+        for idx, cost in sorted_enabled_costs_tuples:
+            c_type = cost.calculation_type
+            if c_type == "fixed_per_item" or c_type == "fixed_per_order":
+                # calculator currently evaluates one standalone construction, so fixed_per_order is applied once at preview level.
+                raw_amount = float(cost.value)
+            elif c_type == "per_m2":
+                outer_area_m2 = (width * height) / 1_000_000.0
+                raw_amount = float(cost.value) * outer_area_m2
+            elif c_type == "per_linear_meter":
+                outer_perimeter_m = frame_perimeter / 1000.0
+                raw_amount = float(cost.value) * outer_perimeter_m
+            elif c_type == "percent_of_materials":
+                raw_amount = materials_subtotal * float(cost.value) / 100.0
+            else:
+                raise CalculatorPricingError(f"Unsupported calculation type: {c_type}")
+
+            if not math.isfinite(raw_amount):
+                raise CalculatorPricingError(f"Additional cost amount is non-finite for cost ID {cost.id}")
+
+            rounded_amount = round(raw_amount, 2)
+            additional_costs_total += rounded_amount
+
+            additional_costs_breakdown.append({
+                "id": cost.id,
+                "name": cost.name,
+                "calculation_type": str(cost.calculation_type.value) if hasattr(cost.calculation_type, "value") else str(cost.calculation_type),
+                "value": float(cost.value),
+                "amount": rounded_amount
+            })
+
+        if not math.isfinite(additional_costs_total):
+            raise CalculatorPricingError("Additional costs total is non-finite")
+
+        additional_costs_total = round(additional_costs_total, 2)
+
+        subtotal_before_markup = round(materials_subtotal + additional_costs_total, 2)
+        if not math.isfinite(subtotal_before_markup):
+            raise CalculatorPricingError("subtotal_before_markup is non-finite")
+
+        markup_rate = float(pricing_context.commercial.markup_rate)
+        markup_amount = round(subtotal_before_markup * markup_rate / 100.0, 2)
+        if not math.isfinite(markup_amount):
+            raise CalculatorPricingError("markup_amount is non-finite")
+
+        subtotal_after_markup = round(subtotal_before_markup + markup_amount, 2)
+        if not math.isfinite(subtotal_after_markup):
+            raise CalculatorPricingError("subtotal_after_markup is non-finite")
+
+        discount_rate = float(pricing_context.commercial.discount_rate)
+        discount_amount = round(subtotal_after_markup * discount_rate / 100.0, 2)
+        if not math.isfinite(discount_amount):
+            raise CalculatorPricingError("discount_amount is non-finite")
+
+        adjusted_subtotal = round(subtotal_after_markup - discount_amount, 2)
+        if not math.isfinite(adjusted_subtotal):
+            raise CalculatorPricingError("adjusted_subtotal is non-finite")
+
+        if adjusted_subtotal < -1e-9:
+            raise CalculatorPricingError("Adjusted subtotal is negative outside tolerance")
+        elif adjusted_subtotal < 0.0:
+            adjusted_subtotal = 0.0
+
         tax_profile = pricing_context.tax_profile
-        tax_rate = tax_profile.rate
-        vat_amount = subtotal * tax_rate
-        final_total = subtotal + vat_amount
+        tax_rate = float(tax_profile.rate)
+        included_in_price = tax_profile.included_in_price
+
+        if not included_in_price:
+            net_price_rounded = adjusted_subtotal
+            vat_amount_rounded = round(adjusted_subtotal * tax_rate, 2)
+            total_rounded = round(net_price_rounded + vat_amount_rounded, 2)
+        else:
+            total_rounded = adjusted_subtotal
+            vat_amount_rounded = round(adjusted_subtotal * tax_rate / (1.0 + tax_rate), 2)
+            net_price_rounded = round(total_rounded - vat_amount_rounded, 2)
+
+        if not math.isfinite(net_price_rounded) or not math.isfinite(vat_amount_rounded) or not math.isfinite(total_rounded):
+            raise CalculatorPricingError("Tax calculation resulted in non-finite values")
 
         # Look up legal reference from global self.taxes by exact name & rate match
         legal_ref = ""
@@ -330,17 +428,35 @@ class WindowCalculator:
         # Calculate technical metrics
         prof_weight_per_m = prof_data.get("weight_per_m", 1.2)
         glass_weight_per_m2 = glass_data.get("weight_per_m2", 20.0)
-        
+
         total_weight = (total_profile_mm / 1000.0) * prof_weight_per_m + (glass_area_total * glass_weight_per_m2)
-        
+
         # Hardware adds a little bit of weight (approx 1.5kg per sash)
         hardware_weight = sum([1.5 for p in panels if p.get("type", "fixed") != "fixed"])
         total_weight += hardware_weight
 
+        commercial_breakdown = {
+            "materials_subtotal": materials_subtotal,
+            "additional_costs_total": additional_costs_total,
+            "additional_costs_breakdown": additional_costs_breakdown,
+            "subtotal_before_markup": subtotal_before_markup,
+            "markup_rate": markup_rate,
+            "markup_amount": markup_amount,
+            "subtotal_after_markup": subtotal_after_markup,
+            "discount_rate": discount_rate,
+            "discount_amount": discount_amount,
+            "adjusted_subtotal": adjusted_subtotal,
+            "tax_rate": tax_rate,
+            "tax_included": included_in_price,
+            "net_price": net_price_rounded,
+            "vat_amount": vat_amount_rounded,
+            "total": total_rounded,
+        }
+
         return {
             "status": "success",
-            "net_price": round(subtotal, 2),
-            "vat_amount": round(vat_amount, 2),
+            "net_price": net_price_rounded,
+            "vat_amount": vat_amount_rounded,
             "legal_reference": legal_ref,
             "metrics": {
                 "area": round(glass_area_total, 4),
@@ -352,6 +468,7 @@ class WindowCalculator:
                 "glass": round(glass_total_cost, 2),
                 "hardware": round(hardware_cost, 2),
                 "extras": round(mosquito_nets_cost + sill_cost + board_cost + bending_cost, 2),
-                "total": round(final_total, 2)
-            }
+                "total": total_rounded
+            },
+            "commercial_breakdown": commercial_breakdown
         }
