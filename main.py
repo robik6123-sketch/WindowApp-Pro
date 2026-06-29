@@ -19,6 +19,7 @@ from pricing_context_builder import (
 from pdf_generator import generate_cart_pdf
 import os
 import json
+import base64
 import uuid
 from datetime import datetime
 import firebase_admin
@@ -31,9 +32,9 @@ from user_settings_repository import (
     UserSettingsInvalidDocumentError,
     UserSettingsWriteError
 )
-from settings_models import UserSettingsResponse, UserSettingsUpdate, UserSettingsStored, BusinessFloat
+from settings_models import UserSettingsResponse, UserSettingsUpdate, UserSettingsStored, BusinessFloat, CalculationType
 from typing import List, Optional, Literal
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+from pydantic import BaseModel, Field, ConfigDict, model_validator, ValidationError
 
 class PanelRequest(BaseModel):
     model_config = ConfigDict(
@@ -206,22 +207,215 @@ def calculate(
         ) from exc
 
 @app.post("/api/create-order")
-async def create_order(cart: dict, current_user: dict = Depends(verify_firebase_token)):
+def create_order(
+    cart: dict,
+    current_user: dict = Depends(verify_firebase_token),
+    repo: UserSettingsRepository = Depends(get_settings_repo),
+):
     try:
+        uid = get_authenticated_uid(current_user)
+
+        # 1. Structure checks
+        if not isinstance(cart, dict):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid cart structure"
+            )
+        items = cart.get("items")
+        if not isinstance(items, list) or len(items) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Items must be a non-empty list"
+            )
+
+        # 2. Get user settings
+        settings_result = repo.get_user_settings(uid)
+        pricing_context = build_pricing_context(
+            calc.materials,
+            settings_result.settings,
+        )
+
+        # 3. Guard against active fixed_per_order on multi-item orders
+        if len(items) > 1:
+            has_active_fixed_per_order = any(
+                cost.enabled and cost.calculation_type == CalculationType.fixed_per_order
+                for cost in pricing_context.additional_costs
+            )
+            if has_active_fixed_per_order:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Multi-item orders are temporarily not supported with active fixed-per-order costs"
+                )
+
+        trusted_items = []
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Item {idx} must be an object"
+                )
+            inp = item.get("input")
+            if not isinstance(inp, dict):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Item {idx} must contain input object"
+                )
+
+            # Separate images
+            input_dict = {**inp}
+            images = input_dict.pop("images", None)
+
+            # Validate images contract
+            if images is not None:
+                if not isinstance(images, dict):
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=f"Item {idx} images must be an object"
+                    )
+                for k, v in images.items():
+                    if k not in ("front", "outside", "side"):
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Item {idx} image key {k} is invalid"
+                        )
+                    if not isinstance(v, str):
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Item {idx} image {k} must be a string"
+                        )
+                    prefix = "data:image/png;base64,"
+                    if not v.startswith(prefix):
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Item {idx} image {k} has invalid prefix"
+                        )
+                    payload_str = v[len(prefix):]
+                    if not payload_str:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Item {idx} image {k} has empty payload"
+                        )
+                    try:
+                        base64.b64decode(payload_str, validate=True)
+                    except Exception:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Item {idx} image {k} has invalid base64 content"
+                        )
+
+            # Validate input using CalculateRequest
+            try:
+                validated_request = CalculateRequest(**input_dict)
+            except ValidationError:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Item {idx} parameters validation failed"
+                )
+
+            # Validate dimensions limits
+            if validated_request.width <= 0 or validated_request.width > 4000 or validated_request.height <= 0 or validated_request.height > 3000:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Габарити перевищують інженерні норми"
+                )
+
+            # Calculate trusted result
+            validated_input_dict = validated_request.model_dump(exclude_unset=True)
+            trusted_result = calc.calculate_project(
+                validated_input_dict,
+                pricing_context,
+            )
+
+            # Verify calculations invariants
+            cbd = trusted_result.get("commercial_breakdown", {})
+            if (
+                trusted_result.get("net_price") != cbd.get("net_price") or
+                trusted_result.get("vat_amount") != cbd.get("vat_amount") or
+                trusted_result.get("cost_details", {}).get("total") != cbd.get("total")
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Внутрішня помилка розрахунку ціни"
+                )
+
+            # Restore images for persisted input
+            persisted_input = {**validated_input_dict}
+            if images is not None:
+                persisted_input["images"] = images
+
+            trusted_items.append({
+                "input": persisted_input,
+                "result": trusted_result
+            })
+
+        # 4. Calculate aggregates based on rounded trusted totals
+        grand_net = round(sum(item["result"]["commercial_breakdown"]["net_price"] for item in trusted_items), 2)
+        grand_vat = round(sum(item["result"]["commercial_breakdown"]["vat_amount"] for item in trusted_items), 2)
+        grand_total = round(sum(item["result"]["commercial_breakdown"]["total"] for item in trusted_items), 2)
+
+        # 5. Build sanitized document
         order_id = str(uuid.uuid4())[:8].upper()
         if USE_FIRESTORE:
             order_record = {
                 "id": order_id,
                 "timestamp": datetime.now(),
-                "owner_uid": current_user["uid"],
+                "owner_uid": uid,
                 "user_email": current_user.get("email"),
-                "cart": cart
+                "calculation_provenance": "server_calculated",
+                "cart": {
+                    "items": trusted_items
+                },
+                "grand_net": grand_net,
+                "grand_vat": grand_vat,
+                "grand_total": grand_total
             }
-            calc.db.collection('orders').document(order_id).set(order_record)
+            try:
+                calc.db.collection('orders').document(order_id).set(order_record)
+            except Exception:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Internal Server Error"
+                )
 
         return {"status": "success", "order_id": order_id}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+
+    except HTTPException:
+        raise
+    except InvalidUIDError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication context is invalid",
+        ) from exc
+    except UserSettingsNotReadableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="User settings are temporarily unavailable",
+        ) from exc
+    except UserSettingsInvalidDocumentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Stored user settings are invalid",
+        ) from exc
+    except MissingResolvedPriceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Внутрішня помилка розрахунку ціни",
+        ) from exc
+    except UnknownMaterialError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Невідомий матеріал або конфігурація",
+        ) from exc
+    except CalculatorPricingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Помилка конфігурації калькулятора",
+        ) from exc
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal Server Error"
+        )
 
 @app.get("/api/generate-quote/{order_id}")
 async def get_quote_pdf(order_id: str, current_user: dict = Depends(verify_firebase_token)):

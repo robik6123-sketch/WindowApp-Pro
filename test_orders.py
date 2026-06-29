@@ -289,7 +289,7 @@ class TestOrdersRoute(unittest.TestCase):
         mock_db = MagicMock()
         main.calc.db = mock_db
 
-        cart_data = {"items": [{"item_id": 1}]}
+        cart_data = {"items": [{"input": {"width": 1000.0, "height": 1000.0}}]}
         response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "success")
@@ -304,7 +304,7 @@ class TestOrdersRoute(unittest.TestCase):
         self.assertEqual(saved_record["id"], order_id)
         self.assertEqual(saved_record["owner_uid"], "user_123")
         self.assertEqual(saved_record["user_email"], "user@example.com")
-        self.assertEqual(saved_record["cart"], cart_data)
+        self.assertEqual(saved_record["cart"]["items"][0]["input"]["width"], 1000.0)
         self.assertIn("timestamp", saved_record)
 
     def test_create_order_ignores_client_supplied_uid_and_email(self):
@@ -316,7 +316,7 @@ class TestOrdersRoute(unittest.TestCase):
         main.calc.db = mock_db
 
         cart_data = {
-            "items": [],
+            "items": [{"input": {"width": 1000.0, "height": 1000.0}}],
             "user_email": "fake_email@example.com",
             "owner_uid": "fake_uid",
             "uid": "fake_uid_2"
@@ -329,8 +329,7 @@ class TestOrdersRoute(unittest.TestCase):
         saved_record = mock_db.collection.return_value.document.return_value.set.call_args[0][0]
         self.assertEqual(saved_record["owner_uid"], "real_uid")
         self.assertEqual(saved_record["user_email"], "real_email@example.com")
-        # Ensure the cart dict structure itself was not modified
-        self.assertEqual(saved_record["cart"], cart_data)
+        self.assertEqual(saved_record["cart"]["items"][0]["input"]["width"], 1000.0)
 
     def test_create_order_firestore_error_500(self):
         """17. create-order: Firestore error -> 500 without leaking details"""
@@ -342,7 +341,8 @@ class TestOrdersRoute(unittest.TestCase):
         # Simulate Firestore failure
         mock_db.collection.side_effect = Exception("Secret Firestore network crash details")
 
-        response = client.post("/api/create-order", json={"items": []}, headers={"Authorization": "Bearer valid_token"})
+        cart_data = {"items": [{"input": {"width": 1000.0, "height": 1000.0}}]}
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
         self.assertEqual(response.status_code, 500)
         self.assertNotIn("Secret Firestore network crash details", response.text)
         self.assertEqual(response.json()["detail"], "Internal Server Error")
@@ -844,6 +844,719 @@ class TestOrdersRoute(unittest.TestCase):
         self.assertEqual(response.status_code, 500)
         self.assertEqual(response.json()["detail"], "Помилка конфігурації калькулятора")
         self.assertNotIn("SECRET", response.text)
+
+    @patch("main.calc.calculate_project")
+    def test_create_order_ignores_client_result_and_recalculates(self, mock_calc_project):
+        """create-order: Client-submitted result is completely ignored and trusted result is stored"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        # Mock calculator return value
+        trusted_result = {
+            "status": "success",
+            "net_price": 3657.50,
+            "vat_amount": 731.50,
+            "legal_reference": "Платник ПДВ (20%)",
+            "metrics": {"area": 1.68, "weight": 45.2, "perimeter": 5.2},
+            "cost_details": {"profile": 1800.0, "glass": 1200.0, "hardware": 500.0, "extras": 700.60, "total": 4389.00},
+            "commercial_breakdown": {
+                "materials_subtotal": 3000.00,
+                "additional_costs_total": 500.00,
+                "subtotal_before_markup": 3500.00,
+                "markup_rate": 10.0,
+                "markup_amount": 350.00,
+                "subtotal_after_markup": 3850.00,
+                "discount_rate": 5.0,
+                "discount_amount": 192.50,
+                "adjusted_subtotal": 3657.50,
+                "tax_rate": 0.20,
+                "tax_included": False,
+                "net_price": 3657.50,
+                "vat_amount": 731.50,
+                "total": 4389.00
+            }
+        }
+        mock_calc_project.return_value = trusted_result
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        cart_data = {
+            "items": [
+                {
+                    "input": {
+                        "width": 1200.0,
+                        "height": 1400.0,
+                        "profile": "REHAU_Euro_70",
+                        "glass": "glass_24",
+                        "color": "white"
+                    },
+                    "result": {
+                        "total": 0.01,
+                        "cost_details": {"total": 0.01},
+                        "commercial_breakdown": {"total": 0.01}
+                    }
+                }
+            ]
+        }
+
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+
+        saved_record = mock_db.collection.return_value.document.return_value.set.call_args[0][0]
+        # Verify that client-submitted result of 0.01 was ignored and replaced with trusted_result
+        self.assertEqual(saved_record["cart"]["items"][0]["result"]["commercial_breakdown"]["total"], 4389.00)
+        self.assertEqual(saved_record["grand_total"], 4389.00)
+        self.assertEqual(saved_record["grand_net"], 3657.50)
+        self.assertEqual(saved_record["grand_vat"], 731.50)
+        self.assertEqual(saved_record["calculation_provenance"], "server_calculated")
+
+    def test_create_order_ignores_client_uid_and_email(self):
+        """create-order: Client-submitted owner_uid, uid and user_email are ignored, token values are used"""
+        user_payload = {"uid": "user_real", "email": "real@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        # Mock settings repository
+        from user_settings_repository import UserSettingsRepositoryResult
+        from settings_models import UserSettingsStored
+        from datetime import datetime, timezone
+        mock_repo = MagicMock()
+        mock_repo.get_user_settings.return_value = UserSettingsRepositoryResult(
+            settings=UserSettingsStored(updated_at=datetime.now(timezone.utc)),
+            is_default=True
+        )
+        app.dependency_overrides[main.get_settings_repo] = lambda: mock_repo
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        with patch("main.calc.calculate_project") as mock_calc_project:
+            mock_calc_project.return_value = {
+                "status": "success",
+                "net_price": 100.0,
+                "vat_amount": 20.0,
+                "cost_details": {"total": 120.0},
+                "commercial_breakdown": {"net_price": 100.0, "vat_amount": 20.0, "total": 120.0}
+            }
+            cart_data = {
+                "items": [
+                    {
+                        "input": {"width": 1000.0, "height": 1000.0},
+                        "result": {}
+                    }
+                ],
+                "owner_uid": "attacker_uid",
+                "uid": "attacker_uid2",
+                "user_email": "attacker@example.com"
+            }
+            response = client.post("/api/create-order?uid=query_uid&user_email=query_email", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+            self.assertEqual(response.status_code, 200)
+
+            saved_record = mock_db.collection.return_value.document.return_value.set.call_args[0][0]
+            self.assertEqual(saved_record["owner_uid"], "user_real")
+            self.assertEqual(saved_record["user_email"], "real@example.com")
+
+    def test_create_order_missing_settings_uses_defaults(self):
+        """create-order: Missing settings document in DB uses approved default settings"""
+        user_payload = {"uid": "user_new", "email": "new@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        from user_settings_repository import UserSettingsRepositoryResult
+        from settings_models import UserSettingsStored
+        from datetime import datetime, timezone
+        mock_repo = MagicMock()
+        mock_repo.get_user_settings.return_value = UserSettingsRepositoryResult(
+            settings=UserSettingsStored(updated_at=datetime.now(timezone.utc)),
+            is_default=True
+        )
+        app.dependency_overrides[main.get_settings_repo] = lambda: mock_repo
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        with patch("main.calc.calculate_project") as mock_calc_project:
+            mock_calc_project.return_value = {
+                "status": "success",
+                "net_price": 100.0,
+                "vat_amount": 20.0,
+                "cost_details": {"total": 120.0},
+                "commercial_breakdown": {"net_price": 100.0, "vat_amount": 20.0, "total": 120.0}
+            }
+            cart_data = {"items": [{"input": {"width": 1000.0, "height": 1000.0}}]}
+            response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+            self.assertEqual(response.status_code, 200)
+            mock_repo.get_user_settings.assert_called_once_with("user_new")
+
+    def test_create_order_settings_unreadable_503(self):
+        """create-order: Settings repository unreadable -> returns 503"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        from user_settings_repository import UserSettingsNotReadableError
+        mock_repo = MagicMock()
+        mock_repo.get_user_settings.side_effect = UserSettingsNotReadableError("Firestore read timeout")
+        app.dependency_overrides[main.get_settings_repo] = lambda: mock_repo
+
+        cart_data = {"items": [{"input": {"width": 1000.0, "height": 1000.0}}]}
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "User settings are temporarily unavailable")
+
+    def test_create_order_invalid_stored_settings_500(self):
+        """create-order: Invalid stored user settings -> returns 500"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        from user_settings_repository import UserSettingsInvalidDocumentError
+        mock_repo = MagicMock()
+        mock_repo.get_user_settings.side_effect = UserSettingsInvalidDocumentError("Stored settings schema version mismatch")
+        app.dependency_overrides[main.get_settings_repo] = lambda: mock_repo
+
+        cart_data = {"items": [{"input": {"width": 1000.0, "height": 1000.0}}]}
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["detail"], "Stored user settings are invalid")
+
+    def test_create_order_invalid_cart_structure_422(self):
+        """create-order: Invalid cart structures are rejected with 422 without writing to DB"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        invalid_structures = [
+            [],
+            "not a dict",
+            {"not_items": []},
+            {"items": "not a list"},
+            {"items": []},
+            {"items": ["not a dict"]},
+            {"items": [{"not_input": {}}]},
+            {"items": [{"input": "not a dict"}]}
+        ]
+
+        for cart in invalid_structures:
+            with self.subTest(cart=cart):
+                mock_db.reset_mock()
+                response = client.post("/api/create-order", json=cart, headers={"Authorization": "Bearer valid_token"})
+                self.assertEqual(response.status_code, 422)
+                mock_db.collection.assert_not_called()
+
+    def test_create_order_invalid_item_n_fails_transactionally(self):
+        """create-order: If item N parameters are invalid, validation fails with 422 and no write happens"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        cart_data = {
+            "items": [
+                {"input": {"width": 1000, "height": 1000}},
+                {"input": {"width": "invalid_width", "height": 1000}}
+            ]
+        }
+
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("Item 1 parameters validation failed", response.json()["detail"])
+        mock_db.collection.assert_not_called()
+
+    @patch("main.calc.calculate_project")
+    def test_create_order_calculation_failure_prevents_write(self, mock_calc_project):
+        """create-order: CalculatorPricingError on item N prevents order creation and returns 500"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        from calculator import CalculatorPricingError
+        mock_calc_project.side_effect = CalculatorPricingError("Something went wrong during calculation")
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        cart_data = {"items": [{"input": {"width": 1000, "height": 1000}}]}
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["detail"], "Помилка конфігурації калькулятора")
+        mock_db.collection.assert_not_called()
+
+    @patch("main.calc.calculate_project")
+    def test_create_order_single_item_with_fixed_per_order_works(self, mock_calc_project):
+        """create-order: Single-item order with active fixed_per_order works perfectly"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        from user_settings_repository import UserSettingsRepositoryResult
+        from settings_models import UserSettingsStored, AdditionalCostSettings, CalculationType
+        from datetime import datetime, timezone
+        settings = UserSettingsStored(
+            updated_at=datetime.now(timezone.utc),
+            additional_costs=[
+                AdditionalCostSettings(
+                    id="delivery",
+                    name="Delivery",
+                    calculation_type=CalculationType.fixed_per_order,
+                    value=500.0,
+                    enabled=True
+                )
+            ]
+        )
+        mock_repo = MagicMock()
+        mock_repo.get_user_settings.return_value = UserSettingsRepositoryResult(
+            settings=settings,
+            is_default=False
+        )
+        app.dependency_overrides[main.get_settings_repo] = lambda: mock_repo
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_calc_project.return_value = {
+            "status": "success",
+            "net_price": 100.0,
+            "vat_amount": 20.0,
+            "cost_details": {"total": 120.0},
+            "commercial_breakdown": {"net_price": 100.0, "vat_amount": 20.0, "total": 120.0}
+        }
+
+        cart_data = {"items": [{"input": {"width": 1000, "height": 1000}}]}
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+        mock_db.collection.assert_called_once_with('orders')
+
+    def test_create_order_multi_item_with_fixed_per_order_rejected_with_422(self):
+        """create-order: Multi-item order with active fixed_per_order is rejected with 422"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        from user_settings_repository import UserSettingsRepositoryResult
+        from settings_models import UserSettingsStored, AdditionalCostSettings, CalculationType
+        from datetime import datetime, timezone
+        settings = UserSettingsStored(
+            updated_at=datetime.now(timezone.utc),
+            additional_costs=[
+                AdditionalCostSettings(
+                    id="delivery",
+                    name="Delivery",
+                    calculation_type=CalculationType.fixed_per_order,
+                    value=500.0,
+                    enabled=True
+                )
+            ]
+        )
+        mock_repo = MagicMock()
+        mock_repo.get_user_settings.return_value = UserSettingsRepositoryResult(
+            settings=settings,
+            is_default=False
+        )
+        app.dependency_overrides[main.get_settings_repo] = lambda: mock_repo
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        cart_data = {
+            "items": [
+                {"input": {"width": 1000, "height": 1000}},
+                {"input": {"width": 1200, "height": 1200}}
+            ]
+        }
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("Multi-item orders are temporarily not supported with active fixed-per-order costs", response.json()["detail"])
+        mock_db.collection.assert_not_called()
+
+    @patch("main.calc.calculate_project")
+    def test_create_order_multi_item_without_fixed_per_order_works(self, mock_calc_project):
+        """create-order: Multi-item order without active fixed_per_order works perfectly"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        from user_settings_repository import UserSettingsRepositoryResult
+        from settings_models import UserSettingsStored, AdditionalCostSettings, CalculationType
+        from datetime import datetime, timezone
+        settings = UserSettingsStored(
+            updated_at=datetime.now(timezone.utc),
+            additional_costs=[
+                AdditionalCostSettings(
+                    id="delivery",
+                    name="Delivery",
+                    calculation_type=CalculationType.fixed_per_order,
+                    value=500.0,
+                    enabled=False
+                ),
+                AdditionalCostSettings(
+                    id="installation",
+                    name="Installation",
+                    calculation_type=CalculationType.fixed_per_item,
+                    value=150.0,
+                    enabled=True
+                )
+            ]
+        )
+        mock_repo = MagicMock()
+        mock_repo.get_user_settings.return_value = UserSettingsRepositoryResult(
+            settings=settings,
+            is_default=False
+        )
+        app.dependency_overrides[main.get_settings_repo] = lambda: mock_repo
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_calc_project.return_value = {
+            "status": "success",
+            "net_price": 100.0,
+            "vat_amount": 20.0,
+            "cost_details": {"total": 120.0},
+            "commercial_breakdown": {"net_price": 100.0, "vat_amount": 20.0, "total": 120.0}
+        }
+
+        cart_data = {
+            "items": [
+                {"input": {"width": 1000, "height": 1000}},
+                {"input": {"width": 1200, "height": 1200}}
+            ]
+        }
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+        mock_db.collection.assert_called_once_with('orders')
+
+        saved_record = mock_db.collection.return_value.document.return_value.set.call_args[0][0]
+        self.assertEqual(saved_record["grand_net"], 200.0)
+        self.assertEqual(saved_record["grand_vat"], 40.0)
+        self.assertEqual(saved_record["grand_total"], 240.0)
+
+    @patch("main.calc.calculate_project")
+    def test_create_order_pricing_context_not_mutated_and_deterministic(self, mock_calc_project):
+        """create-order: PricingContext remains unmutated between multiple calls and repeated calculations are deterministic"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        from user_settings_repository import UserSettingsRepositoryResult
+        from settings_models import UserSettingsStored, CommercialSettings, TaxProfileSettings
+        from datetime import datetime, timezone
+        settings = UserSettingsStored(
+            updated_at=datetime.now(timezone.utc),
+            commercial=CommercialSettings(markup_rate=10.0, discount_rate=5.0),
+            tax_profile=TaxProfileSettings(name="PDV", rate=0.20, included_in_price=False)
+        )
+        mock_repo = MagicMock()
+        mock_repo.get_user_settings.return_value = UserSettingsRepositoryResult(
+            settings=settings,
+            is_default=False
+        )
+        app.dependency_overrides[main.get_settings_repo] = lambda: mock_repo
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_calc_project.return_value = {
+            "status": "success",
+            "net_price": 100.0,
+            "vat_amount": 20.0,
+            "cost_details": {"total": 120.0},
+            "commercial_breakdown": {"net_price": 100.0, "vat_amount": 20.0, "total": 120.0}
+        }
+
+        cart_data = {
+            "items": [
+                {"input": {"width": 1000, "height": 1000}},
+                {"input": {"width": 1200, "height": 1200}}
+            ]
+        }
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+
+        self.assertEqual(mock_calc_project.call_count, 2)
+        ctx1 = mock_calc_project.call_args_list[0][0][1]
+        ctx2 = mock_calc_project.call_args_list[1][0][1]
+
+        self.assertEqual(ctx1.commercial.markup_rate, 10.0)
+        self.assertEqual(ctx1.commercial.discount_rate, 5.0)
+        self.assertEqual(ctx1.tax_profile.rate, 0.20)
+        self.assertEqual(ctx2.commercial.markup_rate, 10.0)
+        self.assertEqual(ctx2.commercial.discount_rate, 5.0)
+        self.assertEqual(ctx2.tax_profile.rate, 0.20)
+
+    @patch("main.calc.calculate_project")
+    def test_create_order_persisted_input_retains_images_compatibility(self, mock_calc_project):
+        """create-order: Optional client images are validated and retained in persisted input for PDF compatibility"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_calc_project.return_value = {
+            "status": "success",
+            "net_price": 100.0,
+            "vat_amount": 20.0,
+            "cost_details": {"total": 120.0},
+            "commercial_breakdown": {"net_price": 100.0, "vat_amount": 20.0, "total": 120.0}
+        }
+
+        images_payload = {
+            "front": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+            "outside": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+            "side": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        }
+        cart_data = {
+            "items": [
+                {
+                    "input": {
+                        "width": 1000.0,
+                        "height": 1000.0,
+                        "images": images_payload
+                    }
+                }
+            ]
+        }
+
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+
+        saved_record = mock_db.collection.return_value.document.return_value.set.call_args[0][0]
+        self.assertEqual(saved_record["cart"]["items"][0]["input"]["images"], images_payload)
+
+        called_dict = mock_calc_project.call_args[0][0]
+        self.assertNotIn("images", called_dict)
+
+    def test_create_order_invalid_image_contract_rejected_with_422(self):
+        """create-order: Invalid image contracts are rejected with 422"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        invalid_images = [
+            "not a dict",
+            {"unexpected_key": "data:image/png;base64,iVBOR..."},
+            {"front": 12345},
+            {"front": "invalid_base64_format"}
+        ]
+
+        for img in invalid_images:
+            with self.subTest(img=img):
+                mock_db.reset_mock()
+                cart_data = {
+                    "items": [
+                        {
+                            "input": {
+                                "width": 1000.0,
+                                "height": 1000.0,
+                                "images": img
+                            }
+                        }
+                    ]
+                }
+                response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+                self.assertEqual(response.status_code, 422)
+                mock_db.collection.assert_not_called()
+
+    @patch("main.generate_cart_pdf")
+    def test_generate_quote_legacy_order_without_provenance_works(self, mock_generate_pdf):
+        """generate-quote: Legacy order without calculation_provenance is rendered as-is by PDF generator"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        cart_data = {
+            "items": [
+                {
+                    "input": {"width": 1000.0, "height": 1000.0},
+                    "result": {"cost_details": {"total": 5000.00}}
+                }
+            ]
+        }
+        mock_doc.to_dict.return_value = {
+            "owner_uid": "user_123",
+            "cart": cart_data
+        }
+        mock_db.collection.return_value.document.return_value.get.return_value = mock_doc
+        mock_generate_pdf.return_value = b"PDF-legacy-content"
+
+        response = client.get("/api/generate-quote/ORD_LEGACY", headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"PDF-legacy-content")
+
+        expected_cart_data = cart_data.copy()
+        expected_cart_data["order_id"] = "ORD_LEGACY"
+        mock_generate_pdf.assert_called_once_with(expected_cart_data)
+
+    def test_create_order_database_write_failure_500(self):
+        """create-order: Firestore database write failure -> returns 500 without leaking details"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+        mock_db.collection.return_value.document.return_value.set.side_effect = Exception("Firestore database write error details")
+
+        with patch("main.calc.calculate_project") as mock_calc_project:
+            mock_calc_project.return_value = {
+                "status": "success",
+                "net_price": 100.0,
+                "vat_amount": 20.0,
+                "cost_details": {"total": 120.0},
+                "commercial_breakdown": {"net_price": 100.0, "vat_amount": 20.0, "total": 120.0}
+            }
+            cart_data = {"items": [{"input": {"width": 1000, "height": 1000}}]}
+            response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+            self.assertEqual(response.status_code, 500)
+            self.assertNotIn("Firestore database write error details", response.text)
+            self.assertEqual(response.json()["detail"], "Internal Server Error")
+
+    def test_create_order_dimension_limits(self):
+        """create-order: dimension validation for width and height limits"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        invalid_cases = [
+            {"width": 0, "height": 1000},
+            {"width": -1, "height": 1000},
+            {"width": 4001, "height": 1000},
+            {"width": 1000, "height": 0},
+            {"width": 1000, "height": -1},
+            {"width": 1000, "height": 3001},
+        ]
+
+        for case in invalid_cases:
+            with self.subTest(case=case):
+                mock_db.reset_mock()
+                cart_data = {"items": [{"input": case}]}
+                response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+                self.assertEqual(response.status_code, 422)
+                self.assertIn("Габарити перевищують інженерні норми", response.json()["detail"])
+                mock_db.collection.assert_not_called()
+
+    def test_create_order_image_validation(self):
+        """create-order: image validation contracts and base64 parsing"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        # 1. Valid cases (should be accepted)
+        valid_cases = [
+            {"front": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="},
+            {"outside": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="},
+            {"side": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="},
+        ]
+        for idx, images in enumerate(valid_cases):
+            with self.subTest(valid_images=images):
+                mock_db.reset_mock()
+                cart_data = {
+                    "items": [{
+                        "input": {
+                            "width": 1000,
+                            "height": 1000,
+                            "images": images
+                        }
+                    }]
+                }
+                response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+                self.assertEqual(response.status_code, 200, response.text)
+                mock_db.collection.assert_called_once_with('orders')
+
+        # 2. Invalid cases (should return 422 and perform no write)
+        invalid_cases = [
+            {"front": "data:image/png;base64,!!!NOT_BASE64!!!"},
+            {"front": "data:image/png;base64,"},
+            {"front": "httpjunk"},
+            {"front": "https://example.com/x.png"},
+            {"front": "data:image/jpeg;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}, # unsupported MIME type
+            {"back": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}, # unexpected image key
+            {"front": 123}, # non-string value
+        ]
+        for idx, images in enumerate(invalid_cases):
+            with self.subTest(invalid_images=images):
+                mock_db.reset_mock()
+                cart_data = {
+                    "items": [{
+                        "input": {
+                            "width": 1000,
+                            "height": 1000,
+                            "images": images
+                        }
+                    }]
+                }
+                response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+                self.assertEqual(response.status_code, 422)
+                mock_db.collection.assert_not_called()
+
+    def test_create_order_multi_item_atomicity_malformed_image(self):
+        """create-order: multi-item order where item 2 has malformed image results in 422 and no write"""
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        cart_data = {
+            "items": [
+                {
+                    "input": {
+                        "width": 1000,
+                        "height": 1000,
+                        "images": {"front": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}
+                    }
+                },
+                {
+                    "input": {
+                        "width": 1000,
+                        "height": 1000,
+                        "images": {"front": "httpjunk"}
+                    }
+                }
+            ]
+        }
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 422)
+        mock_db.collection.assert_not_called()
+
+    @patch("main.calc.calculate_project")
+    def test_create_order_multi_item_atomicity_calculation_failure(self, mock_calc_project):
+        """create-order: multi-item order where item 2 calculation raises exception results in no write"""
+        from calculator import CalculatorPricingError
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        def side_effect(payload, pricing_context):
+            if payload.get("width") == 1001:
+                return {
+                    "status": "success",
+                    "net_price": 100.0,
+                    "vat_amount": 20.0,
+                    "cost_details": {"total": 120.0},
+                    "commercial_breakdown": {"net_price": 100.0, "vat_amount": 20.0, "total": 120.0}
+                }
+            else:
+                raise CalculatorPricingError("Simulated calculator failure")
+
+        mock_calc_project.side_effect = side_effect
+
+        cart_data = {
+            "items": [
+                {"input": {"width": 1001, "height": 1000}},
+                {"input": {"width": 1002, "height": 1000}}
+            ]
+        }
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 500)
+        mock_db.collection.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()
