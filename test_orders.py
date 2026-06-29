@@ -37,6 +37,17 @@ class TestOrdersRoute(unittest.TestCase):
         self.real_use_firestore = main.USE_FIRESTORE
         main.USE_FIRESTORE = True
 
+        # Mock settings repository for calculate route tests to prevent 503 database errors
+        from user_settings_repository import UserSettingsRepositoryResult
+        from settings_models import UserSettingsStored
+        from datetime import datetime, timezone
+        mock_repo = MagicMock()
+        mock_repo.get_user_settings.return_value = UserSettingsRepositoryResult(
+            settings=UserSettingsStored(updated_at=datetime.now(timezone.utc)),
+            is_default=True
+        )
+        app.dependency_overrides[main.get_settings_repo] = lambda: mock_repo
+
     def tearDown(self):
         # Clear overrides and restore original db and USE_FIRESTORE state
         app.dependency_overrides.clear()

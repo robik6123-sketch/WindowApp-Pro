@@ -9,7 +9,13 @@ from calculator import (
     UnknownMaterialError,
     MissingResolvedPriceError
 )
-from pricing_context_provider import get_default_pricing_context
+from pricing_context_builder import (
+    build_pricing_context,
+    PricingContextBuilderError,
+    InvalidGlobalCatalogError,
+    UnknownMaterialOverrideError,
+    PricingContextValidationError
+)
 from pdf_generator import generate_cart_pdf
 import os
 import json
@@ -94,31 +100,110 @@ async def get_current_user(res: HTTPAuthorizationCredentials = Depends(security)
     except Exception as e:
         raise HTTPException(status_code=401, detail="Invalid authentication credentials")
 
+def get_authenticated_uid(current_user: dict) -> str:
+    uid = current_user.get("uid") if isinstance(current_user, dict) else None
+    if not isinstance(uid, str) or not uid.strip():
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication context is invalid",
+        )
+    return uid
+
+def get_settings_repo() -> UserSettingsRepository:
+    db = getattr(calc, "db", None)
+    if not USE_FIRESTORE or db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="User settings are temporarily unavailable",
+        )
+    return UserSettingsRepository(db)
+
 @app.get("/")
 async def root():
     """Serves the main frontend interface"""
     return FileResponse("index.html")
 
 @app.post("/api/calculate")
-async def calculate(order: CalculateRequest, current_user: dict = Depends(verify_firebase_token)):
+def calculate(
+    order: CalculateRequest,
+    current_user: dict = Depends(verify_firebase_token),
+    repo: UserSettingsRepository = Depends(get_settings_repo),
+):
     try:
         if order.width > 4000 or order.height > 3000:
             raise HTTPException(status_code=400, detail="Габарити перевищують інженерні норми")
 
+        uid = get_authenticated_uid(current_user)
+        settings_result = repo.get_user_settings(uid)
+
+        pricing_context = build_pricing_context(
+            calc.materials,
+            settings_result.settings,
+        )
+
         order_dict = order.model_dump(exclude_unset=True)
-        pricing_context = get_default_pricing_context(calc.materials)
-        result = calc.calculate_project(order_dict, pricing_context)
-        # We don't save to firestore here anymore, because this is just a calculation preview.
-        # Saving happens in /api/create-order
-        return result
-    except MissingResolvedPriceError as e:
-        raise HTTPException(status_code=500, detail="Внутрішня помилка розрахунку ціни")
-    except UnknownMaterialError as e:
-        raise HTTPException(status_code=400, detail="Невідомий матеріал або конфігурація")
-    except CalculatorPricingError as e:
-        raise HTTPException(status_code=500, detail="Помилка конфігурації калькулятора")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
+        calculation_result = calc.calculate_project(
+            order_dict,
+            pricing_context,
+        )
+
+        return calculation_result
+    except InvalidUIDError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Authentication context is invalid",
+        ) from exc
+    except UserSettingsNotReadableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="User settings are temporarily unavailable",
+        ) from exc
+    except UserSettingsInvalidDocumentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Stored user settings are invalid",
+        ) from exc
+    except InvalidGlobalCatalogError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Внутрішня помилка конфігурації",
+        ) from exc
+    except UnknownMaterialOverrideError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Внутрішня помилка конфігурації",
+        ) from exc
+    except PricingContextValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Внутрішня помилка розрахунку ціни",
+        ) from exc
+    except PricingContextBuilderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Внутрішня помилка розрахунку ціни",
+        ) from exc
+    except MissingResolvedPriceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Внутрішня помилка розрахунку ціни",
+        ) from exc
+    except UnknownMaterialError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Невідомий матеріал або конфігурація",
+        ) from exc
+    except CalculatorPricingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Помилка конфігурації калькулятора",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal Server Error",
+        ) from exc
 
 @app.post("/api/create-order")
 async def create_order(cart: dict, current_user: dict = Depends(verify_firebase_token)):
@@ -197,23 +282,6 @@ async def get_user_orders(current_user: dict = Depends(verify_firebase_token)):
     except Exception:
         raise HTTPException(status_code=503, detail="Service Unavailable")
 
-def get_authenticated_uid(current_user: dict) -> str:
-    uid = current_user.get("uid") if isinstance(current_user, dict) else None
-    if not isinstance(uid, str) or not uid.strip():
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Authentication context is invalid",
-        )
-    return uid
-
-def get_settings_repo() -> UserSettingsRepository:
-    db = getattr(calc, "db", None)
-    if not USE_FIRESTORE or db is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="User settings are temporarily unavailable",
-        )
-    return UserSettingsRepository(db)
 
 def build_settings_response(
     stored: UserSettingsStored,
