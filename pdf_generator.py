@@ -44,10 +44,10 @@ class CartQuotePDF(FPDF):
 def generate_cart_pdf(cart_data):
     pdf = CartQuotePDF()
     pdf.add_page()
-    
+
     order_id = cart_data.get('order_id', 'N/A')
     date_str = datetime.datetime.now().strftime('%d.%m.%Y %H:%M')
-    
+
     pdf.set_font('Roboto', 'B', 14)
     pdf.set_text_color(0, 0, 0)
     pdf.cell(0, 8, text=f"Комерційна пропозиція №{order_id}", new_x="LMARGIN", new_y="NEXT")
@@ -56,7 +56,7 @@ def generate_cart_pdf(cart_data):
     pdf.ln(5)
 
     items = cart_data.get('items', [])
-    
+
     grand_total = 0
     total_area = 0
     total_weight = 0
@@ -67,7 +67,7 @@ def generate_cart_pdf(cart_data):
         res = item.get('result', {})
         metrics = res.get('metrics', {})
         cost = res.get('cost_details', {})
-        
+
         grand_total += cost.get('total', 0)
         total_area += metrics.get('area', 0)
         total_weight += metrics.get('weight', 0)
@@ -80,23 +80,23 @@ def generate_cart_pdf(cart_data):
         pdf.ln(2)
 
         start_y = pdf.get_y()
-        
+
         # Collage of 3 Images (Front, Outside, Side)
         images = inp.get('images', {})
         img_w = 58
-        
+
         # Determine actual aspect ratio and height of each image dynamically
         front_w, front_h = get_png_dimensions(images.get('front'))
         front_pdf_h = img_w * (front_h / front_w)
-        
+
         outside_w, outside_h = get_png_dimensions(images.get('outside'))
         outside_pdf_h = img_w * (outside_h / outside_w)
-        
+
         side_w, side_h = get_png_dimensions(images.get('side'))
         side_pdf_h = img_w * (side_h / side_w)
-        
+
         max_img_h = max(front_pdf_h, outside_pdf_h, side_pdf_h)
-        
+
         # 1. Front View (Inside)
         if images.get('front'):
             try:
@@ -133,19 +133,19 @@ def generate_cart_pdf(cart_data):
         # Y position for the tables below the collage
         tables_y = start_y + max_img_h + 8
         table_w = 90
-        
+
         # Specs Table (Left)
         pdf.set_xy(10, tables_y)
         pdf.set_font('Roboto', 'B', 9)
         pdf.cell(table_w, 6, text="Характеристики", border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
-        
+
         specs = [
             ("Профіль", inp.get('profile', 'Стандарт')),
             ("Склопакет", inp.get('glass', 'Стандарт')),
             ("Колір", inp.get('color', 'Білий')),
             ("Розміри (Ш x В)", f"{inp.get('width', 0)} x {inp.get('height', 0)} мм")
         ]
-        
+
         for k, v in specs:
             pdf.set_xy(10, pdf.get_y())
             pdf.set_font('Roboto', 'B', 8)
@@ -157,7 +157,7 @@ def generate_cart_pdf(cart_data):
         pdf.set_xy(110, tables_y)
         pdf.set_font('Roboto', 'B', 9)
         pdf.cell(table_w, 6, text="Інженерні дані", border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
-        
+
         m_data = [
             ("Площа", f"{metrics.get('area', 0)} м²"),
             ("Периметр", f"{metrics.get('perimeter', 0)} м"),
@@ -169,7 +169,7 @@ def generate_cart_pdf(cart_data):
             pdf.cell(30, 6, text=f" {k}:", border=1)
             pdf.set_font('Roboto', '', 8)
             pdf.cell(60, 6, text=f" {v}", border=1, new_x="LMARGIN", new_y="NEXT")
-            
+
         # Price Box (Right, below Metrics)
         pdf.set_xy(110, pdf.get_y() + 2)
         pdf.set_font('Roboto', 'B', 10)
@@ -180,23 +180,23 @@ def generate_cart_pdf(cart_data):
         # Update end_y to be below the tables
         end_y = tables_y + 36
         pdf.set_y(end_y)
-        
+
         if idx < len(items) - 1 and pdf.get_y() > 200:
             pdf.add_page()
-            
+
     # Extras Table
     pdf.add_page()
     pdf.set_font('Roboto', 'B', 12)
     pdf.set_fill_color(*pdf.bg_col)
     pdf.cell(0, 10, text=" Додаткова комплектація (Всі вікна)", new_x="LMARGIN", new_y="NEXT", align='L', fill=True)
     pdf.ln(5)
-    
+
     pdf.set_font('Roboto', 'B', 9)
     pdf.cell(80, 8, text=" Найменування", border=1)
     pdf.cell(40, 8, text=" Розміри", border=1)
     pdf.cell(30, 8, text=" Конструкція №", border=1)
     pdf.cell(40, 8, text=" Гарантія", border=1, new_x="LMARGIN", new_y="NEXT")
-    
+
     pdf.set_font('Roboto', '', 9)
     has_extras = False
     for idx, item in enumerate(items):
@@ -221,34 +221,48 @@ def generate_cart_pdf(cart_data):
                 pdf.cell(30, 8, text=str(idx+1), border=1, align='C')
                 pdf.cell(40, 8, text="Надається", border=1, new_x="LMARGIN", new_y="NEXT")
                 break
-                
+
     if not has_extras:
         pdf.cell(190, 8, text=" Немає додаткових елементів", border=1, align='C', new_x="LMARGIN", new_y="NEXT")
-        
+
     pdf.ln(10)
-    
+
     # Grand Totals
     pdf.set_font('Roboto', 'B', 12)
     pdf.cell(0, 10, text=" ПІДСУМКИ", new_x="LMARGIN", new_y="NEXT", align='L', fill=True)
     pdf.ln(5)
-    
+
     pdf.set_font('Roboto', 'B', 10)
     pdf.cell(47.5, 8, text=" Кількість конструкцій", border=1, align='C')
     pdf.cell(47.5, 8, text=" Загальна площа", border=1, align='C')
     pdf.cell(47.5, 8, text=" Загальна вага", border=1, align='C')
     pdf.cell(47.5, 8, text=" Загальний периметр", border=1, align='C', new_x="LMARGIN", new_y="NEXT")
-    
+
     pdf.set_font('Roboto', '', 10)
     pdf.cell(47.5, 8, text=f"{len(items)} шт.", border=1, align='C')
     pdf.cell(47.5, 8, text=f"{total_area:.4f} м²", border=1, align='C')
     pdf.cell(47.5, 8, text=f"{total_weight:.2f} кг", border=1, align='C')
     pdf.cell(47.5, 8, text=f"{total_perimeter:.2f} м", border=1, align='C', new_x="LMARGIN", new_y="NEXT")
-    
+
+    order_cb = cart_data.get('order_commercial_breakdown')
+    if order_cb:
+        grand_total = order_cb.get('total', grand_total)
+        order_costs = order_cb.get('order_level_additional_costs_breakdown', [])
+        if order_costs:
+            pdf.ln(5)
+            pdf.set_font('Roboto', 'B', 10)
+            pdf.set_text_color(0, 0, 0)
+            for cost_item in order_costs:
+                name = cost_item.get('name', 'Доставка')
+                amount = cost_item.get('amount', 0.0)
+                pdf.cell(0, 8, text=f"{name}: {amount:,.2f} грн", align='R', new_x="LMARGIN", new_y="NEXT")
+
     pdf.ln(10)
     pdf.set_font('Roboto', 'B', 16)
     pdf.set_text_color(*pdf.primary_col)
     pdf.cell(0, 15, text=f"ЗАГАЛЬНА СУМА ДО СПЛАТИ: {grand_total:,.2f} грн", align='R', new_x="LMARGIN", new_y="NEXT")
-    
+
+
     pdf.ln(5)
     pdf.set_text_color(0, 0, 0)
     pdf.set_fill_color(255, 243, 205)

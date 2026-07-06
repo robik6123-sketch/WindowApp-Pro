@@ -7,7 +7,8 @@ from calculator import (
     WindowCalculator,
     CalculatorPricingError,
     UnknownMaterialError,
-    MissingResolvedPriceError
+    MissingResolvedPriceError,
+    apply_commercial_adjustments
 )
 from pricing_context_builder import (
     build_pricing_context,
@@ -206,6 +207,86 @@ def calculate(
             detail="Internal Server Error",
         ) from exc
 
+def calculate_order_commercials(
+    items_breakdowns: list,
+    pricing_context
+) -> dict:
+    total_materials = 0.0
+    total_local_costs = 0.0
+    for ib in items_breakdowns:
+        if (
+            "materials_subtotal" not in ib
+            or "additional_costs_total" not in ib
+            or "additional_costs_breakdown" not in ib
+        ):
+            raise CalculatorPricingError("Missing required item-level breakdown fields")
+
+        m = ib["materials_subtotal"]
+        l = ib["additional_costs_total"]
+        ac_breakdown = ib["additional_costs_breakdown"]
+
+        if (
+            not isinstance(m, (int, float)) or isinstance(m, bool)
+            or not isinstance(l, (int, float)) or isinstance(l, bool)
+            or not isinstance(ac_breakdown, list)
+        ):
+            raise CalculatorPricingError("Invalid item-level breakdown field types")
+
+        total_materials += m
+        total_local_costs += l
+
+    order_costs_breakdown = []
+    order_costs_total = 0.0
+
+    # Process order-level costs (fixed_per_order)
+    enabled_order_costs = [
+        (idx, cost) for idx, cost in enumerate(pricing_context.additional_costs)
+        if cost.enabled and cost.calculation_type == CalculationType.fixed_per_order
+    ]
+    sorted_order_costs = sorted(enabled_order_costs, key=lambda x: (x[1].sort_order, x[0]))
+
+    for idx, cost in sorted_order_costs:
+        raw_amount = float(cost.value)
+        rounded_amount = round(raw_amount, 2)
+        order_costs_total += rounded_amount
+        order_costs_breakdown.append({
+            "id": cost.id,
+            "name": cost.name,
+            "calculation_type": "fixed_per_order",
+            "value": float(cost.value),
+            "amount": rounded_amount
+        })
+
+    total_additional_costs = round(total_local_costs + order_costs_total, 2)
+
+    # Apply shared adjustments
+    order_result = apply_commercial_adjustments(
+        materials_subtotal=total_materials,
+        additional_costs_total=total_additional_costs,
+        additional_costs_breakdown=[],  # Separate details for order breakdown
+        commercial_settings=pricing_context.commercial,
+        tax_profile=pricing_context.tax_profile
+    )
+
+    # Collect all items breakdowns combined for additional_costs_breakdown
+    combined_additional_costs_breakdown = []
+    for ib in items_breakdowns:
+        combined_additional_costs_breakdown.extend(ib.get("additional_costs_breakdown", []))
+    combined_additional_costs_breakdown.extend(order_costs_breakdown)
+
+    order_result["items_materials_subtotal"] = total_materials
+    order_result["item_level_additional_costs_total"] = total_local_costs
+    order_result["item_level_additional_costs_breakdown"] = []
+    for ib in items_breakdowns:
+        order_result["item_level_additional_costs_breakdown"].extend(ib.get("additional_costs_breakdown", []))
+
+    order_result["order_level_additional_costs_total"] = order_costs_total
+    order_result["order_level_additional_costs_breakdown"] = order_costs_breakdown
+    order_result["additional_costs_total"] = total_additional_costs
+    order_result["additional_costs_breakdown"] = combined_additional_costs_breakdown
+
+    return order_result
+
 @app.post("/api/create-order")
 def create_order(
     cart: dict,
@@ -235,17 +316,14 @@ def create_order(
             settings_result.settings,
         )
 
-        # 3. Guard against active fixed_per_order on multi-item orders
-        if len(items) > 1:
-            has_active_fixed_per_order = any(
-                cost.enabled and cost.calculation_type == CalculationType.fixed_per_order
-                for cost in pricing_context.additional_costs
-            )
-            if has_active_fixed_per_order:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Multi-item orders are temporarily not supported with active fixed-per-order costs"
-                )
+        # 3. Filter out fixed_per_order costs for item-level calculations
+        item_only_costs = [
+            cost.model_copy() for cost in pricing_context.additional_costs
+            if cost.calculation_type != CalculationType.fixed_per_order
+        ]
+        item_pricing_context = pricing_context.model_copy(
+            update={"additional_costs": item_only_costs}
+        )
 
         trusted_items = []
         for idx, item in enumerate(items):
@@ -319,11 +397,11 @@ def create_order(
                     detail="Габарити перевищують інженерні норми"
                 )
 
-            # Calculate trusted result
+            # Calculate trusted result with isolated item context
             validated_input_dict = validated_request.model_dump(exclude_unset=True)
             trusted_result = calc.calculate_project(
                 validated_input_dict,
-                pricing_context,
+                item_pricing_context,
             )
 
             # Verify calculations invariants
@@ -348,10 +426,14 @@ def create_order(
                 "result": trusted_result
             })
 
-        # 4. Calculate aggregates based on rounded trusted totals
-        grand_net = round(sum(item["result"]["commercial_breakdown"]["net_price"] for item in trusted_items), 2)
-        grand_vat = round(sum(item["result"]["commercial_breakdown"]["vat_amount"] for item in trusted_items), 2)
-        grand_total = round(sum(item["result"]["commercial_breakdown"]["total"] for item in trusted_items), 2)
+        # 4. Calculate true order-level commercial breakdown
+        items_breakdowns = [item["result"]["commercial_breakdown"] for item in trusted_items]
+        order_cb = calculate_order_commercials(items_breakdowns, pricing_context)
+
+        grand_net = order_cb["net_price"]
+        grand_vat = order_cb["vat_amount"]
+        grand_total = order_cb["total"]
+
 
         # 5. Build sanitized document
         order_id = str(uuid.uuid4())[:8].upper()
@@ -365,6 +447,7 @@ def create_order(
                 "cart": {
                     "items": trusted_items
                 },
+                "order_commercial_breakdown": order_cb,
                 "grand_net": grand_net,
                 "grand_vat": grand_vat,
                 "grand_total": grand_total
@@ -376,6 +459,7 @@ def create_order(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail="Internal Server Error"
                 )
+
 
         return {"status": "success", "order_id": order_id}
 
@@ -439,6 +523,8 @@ async def get_quote_pdf(order_id: str, current_user: dict = Depends(verify_fireb
         if "cart" in data:
             cart_data = data["cart"]
             cart_data["order_id"] = order_id
+            if "order_commercial_breakdown" in data:
+                cart_data["order_commercial_breakdown"] = data["order_commercial_breakdown"]
         else:
             # Legacy fallback for single-window orders
             cart_data = {

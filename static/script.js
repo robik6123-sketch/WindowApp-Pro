@@ -28,14 +28,14 @@ firebase.auth().onAuthStateChanged(async (user) => {
     if (user) {
         idToken = await user.getIdToken();
         userEmail = user.email;
-        
+
         // Update UI
         document.getElementById('user-photo').src = user.photoURL;
         document.getElementById('user-name').textContent = user.displayName;
         userInfo.classList.remove('hidden');
         loginBtn.classList.add('hidden');
         historyBlock.classList.remove('hidden');
-        
+
         loadOrderHistory();
     } else {
         idToken = null;
@@ -83,7 +83,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const count = parseInt(vSectionsInput.value) || 1;
         panelsContainer.innerHTML = '';
         const equalProp = (100 / count).toFixed(1);
-        
+
         for(let i=1; i<=count; i++) {
             const div = document.createElement('div');
             div.className = 'panel-config-row';
@@ -110,7 +110,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
             `;
             panelsContainer.appendChild(div);
-            
+
             const sel = div.querySelector('.panel-type');
             const chk = div.querySelector('.panel-mosquito');
             sel.addEventListener('change', () => {
@@ -129,16 +129,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const errors = [];
         if (payload.width > 4000) errors.push("Ширина не може перевищувати 4000 мм.");
         if (payload.height > 3000) errors.push("Висота не може перевищувати 3000 мм.");
-        
+
         if (payload.type === 'arched') {
             if (payload.arc_height < 150) errors.push("Висота арки занадто мала (мінімум 150 мм).");
             if (payload.arc_height > payload.width / 2) errors.push("Висота арки не може бути більшою за радіус (Ширина/2).");
         }
-        
+
         if (payload.material_type === 'pvc' && payload.width > 2800) {
             errors.push("Для конструкцій ПВХ шириною > 2800 мм рекомендується використовувати алюміній для жорсткості.");
         }
-        
+
         return errors;
     }
 
@@ -148,7 +148,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.getElementById('btn-calc').addEventListener('click', async (e) => {
         e.preventDefault();
-        
+
         const loader = document.getElementById('loader');
         const submitBtn = document.getElementById('btn-calc');
         const errorToast = document.getElementById('error-message');
@@ -165,10 +165,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const propInputs = document.querySelectorAll('.panel-prop');
             const typeInputs = document.querySelectorAll('.panel-type');
             const mosquitoInputs = document.querySelectorAll('.panel-mosquito');
-            
+
             for(let i=0; i<propInputs.length; i++) {
-                panels.push({ 
-                    proportion: parseFloat(propInputs[i].value), 
+                panels.push({
+                    proportion: parseFloat(propInputs[i].value),
                     type: typeInputs[i].value,
                     mosquito: mosquitoInputs[i].checked
                 });
@@ -213,7 +213,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const img = new Image();
                 img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
                 await new Promise(r => img.onload = r);
-                
+
                 canvas.width = 1000;
                 canvas.height = viewType === 'side' ? 1000 : 1000 * (payload.height / payload.width);
                 if (canvas.height < 600) canvas.height = 600;
@@ -233,21 +233,21 @@ document.addEventListener('DOMContentLoaded', () => {
             const imgInside = await captureView('inside');
             const imgOutside = await captureView('outside');
             const imgSide = await captureView('side');
-            
+
             // Restore default view on screen
             drawProjections(payload, 'inside');
-            
+
             // Add images to payload for PDF
             payload.images = { front: imgInside, outside: imgOutside, side: imgSide };
-            
+
             // Show collage with correct labels
             document.getElementById('collage-section').classList.remove('hidden');
             document.getElementById('img-front').src = imgInside;
             document.getElementById('img-front').nextElementSibling.textContent = "Зсередини приміщення";
-            
+
             document.getElementById('img-side').src = imgOutside;
             document.getElementById('img-side').nextElementSibling.textContent = "Зовні (Фасад)";
-            
+
             document.getElementById('img-top').src = imgSide;
             document.getElementById('img-top').nextElementSibling.textContent = "Вигляд справа (Профіль)";
 
@@ -269,17 +269,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const data = await response.json();
             if (!response.ok) throw new Error(data.detail || data.error || 'Server Error');
-            
+
             if (data.status === 'error') {
                 throw new Error(data.message || "Помилка розрахунку на сервері");
             }
-            
+
             if (!data.cost_details) throw new Error("Сервер повернув успішну відповідь, але дані розрахунку відсутні.");
 
             currentOrderId = data.order_id;
             window.lastCalculatedData = payload;
             window.lastResultData = data;
-            
+
             // Update UI
             const cd = data.cost_details;
             document.getElementById('res-prof-cost').textContent = (cd.profile || 0).toFixed(2);
@@ -287,7 +287,7 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('res-hw-cost').textContent = (cd.hardware || 0).toFixed(2);
             document.getElementById('res-extra-cost').textContent = (cd.extras || 0).toFixed(2);
             document.getElementById('res-total').innerHTML = `${(cd.total || 0).toFixed(2)} <small>грн</small>`;
-            
+
             resultCard.classList.remove('hidden');
             // We removed the individual share and PDF buttons from here. They are in the Cart now.
 
@@ -308,23 +308,23 @@ document.addEventListener('DOMContentLoaded', () => {
         const cartContainer = document.getElementById('cart-container');
         const cartList = document.getElementById('cart-items-list');
         const cartTotal = document.getElementById('cart-total');
-        
+
         if (window.orderCart.length === 0) {
             cartContainer.classList.add('hidden');
             return;
         }
-        
+
         cartContainer.classList.remove('hidden');
         cartList.innerHTML = '';
         let grandTotal = 0;
-        
+
         window.orderCart.forEach((item, idx) => {
             const cost = item.result.cost_details.total;
             grandTotal += cost;
             const w = item.input.width;
             const h = item.input.height;
             const mat = item.input.material_type;
-            
+
             cartList.innerHTML += `
                 <div style="background: rgba(255,255,255,0.05); padding: 10px; border-radius: 4px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
                     <div>
@@ -336,9 +336,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
             `;
         });
-        
+
         cartTotal.innerHTML = `${grandTotal.toFixed(2)} <small>грн</small>`;
-        
+
         // Reset order state since cart changed
         window.currentCartOrderId = null;
         document.getElementById('btn-download-quote').classList.add('hidden');
@@ -361,23 +361,23 @@ document.addEventListener('DOMContentLoaded', () => {
         const btn = document.getElementById('btn-create-order');
         btn.disabled = true;
         btn.textContent = "⌛ Формування замовлення...";
-        
+
         try {
             const headers = { 'Content-Type': 'application/json' };
             if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
-            
+
             const payload = {
                 user_email: userEmail,
                 items: window.orderCart
             };
-            
+
             const res = await fetch(`${API_URL}/api/create-order`, {
                 method: 'POST',
                 headers: headers,
                 body: JSON.stringify(payload)
             });
             const data = await res.json();
-            
+
             if (data.status === 'success') {
                 window.currentCartOrderId = data.order_id;
                 document.getElementById('btn-download-quote').classList.remove('hidden');
@@ -400,7 +400,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!window.currentCartOrderId) return;
         const btn = document.getElementById('btn-download-quote');
         const originalText = btn.textContent;
-        
+
         const fetchQuote = async () => {
             const headers = {};
             if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
@@ -413,7 +413,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             btn.textContent = "⌛ Завантаження...";
             btn.disabled = true;
-            
+
             let blob = await fetchQuote();
             if (!blob) {
                 await new Promise(r => setTimeout(r, 1500));
@@ -428,8 +428,8 @@ document.addEventListener('DOMContentLoaded', () => {
             a.click();
             window.URL.revokeObjectURL(url);
             btn.textContent = "✅ Завантажено";
-        } catch (e) { 
-            alert(e.message); 
+        } catch (e) {
+            alert(e.message);
             btn.textContent = originalText;
         } finally {
             btn.disabled = false;
@@ -442,12 +442,12 @@ document.addEventListener('DOMContentLoaded', () => {
             alert("Спершу сформуйте замовлення");
             return;
         }
-        
+
         let grandTotal = 0;
         window.orderCart.forEach(item => grandTotal += item.result.cost_details.total);
-        
+
         const reportUrl = `${API_URL}/api/generate-quote/${window.currentCartOrderId}`;
-        
+
         const text = `🏗 ТЕХНІЧНЕ ЗАМОВЛЕННЯ (WINDOW APP PRO)\n` +
                      `------------------------------------\n` +
                      `📦 Кількість конструкцій: ${window.orderCart.length} шт.\n` +
@@ -461,7 +461,7 @@ document.addEventListener('DOMContentLoaded', () => {
             wa: `https://api.whatsapp.com/send?text=${encoded}`,
             mail: `mailto:?subject=WindowApp Order Quote&body=${encoded}`
         };
-        
+
         // Always try to copy to clipboard as a reliable fallback for desktop
         try {
             navigator.clipboard.writeText(text);
@@ -475,7 +475,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Try to open the application link
         window.open(links[channel], '_blank');
-        
+
         if (channel === 'vb') {
             const toast = document.getElementById('error-message');
             toast.textContent = "ℹ️ Текст замовлення та посилання скопійовано! Якщо Viber не відкрився автоматично, відкрийте його і натисніть Вставити (Paste).";
@@ -502,7 +502,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 headers: { 'Authorization': `Bearer ${idToken}` }
             });
             const orders = await res.json();
-            
+
             if (!orders || orders.length === 0) {
                 list.innerHTML = '<p style="opacity:0.5;">Історія поки порожня</p>';
                 return;
@@ -511,14 +511,22 @@ document.addEventListener('DOMContentLoaded', () => {
             list.innerHTML = orders.map(o => {
                 let cost = 0;
                 let desc = "";
-                if (o.cart && o.cart.items) {
+                if (o.grand_total !== undefined && o.grand_total !== null) {
+                    cost = o.grand_total;
+                    if (o.cart && o.cart.items) {
+                        desc = `${o.cart.items.length} конструкцій`;
+                    } else if (o.input) {
+                        desc = `${o.input.width}x${o.input.height} (${o.input.material_type})`;
+                    }
+                } else if (o.cart && o.cart.items) {
                     o.cart.items.forEach(i => cost += i.result.cost_details.total);
                     desc = `${o.cart.items.length} конструкцій`;
                 } else if (o.result) {
                     cost = o.result.cost_details.total;
                     desc = `${o.input.width}x${o.input.height} (${o.input.material_type})`;
                 }
-                
+
+
                 return `
                 <div class="order-history-item" style="padding:10px; border-bottom:1px solid rgba(0,0,0,0.05); display:flex; justify-content:space-between; align-items:center;">
                     <div>
@@ -556,11 +564,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const svg = document.getElementById('cad-canvas');
         if (!svg) return;
         svg.innerHTML = '';
-        
+
         const winW = payload.width;
         const winH = payload.height;
         const pad = 150;
-        
+
         const makeSVG = (tag, attrs) => {
             const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
             for(let k in attrs) el.setAttribute(k, attrs[k]);
@@ -572,7 +580,7 @@ document.addEventListener('DOMContentLoaded', () => {
             svg.setAttribute('viewBox', `${-pad} ${-pad} ${winW + pad * 2} ${winH + pad * 2}`);
             const cx = winW / 2;
             const frameDepth = 70; // 70mm profile thickness
-            
+
             // Wall Context Line
             svg.appendChild(makeSVG('line', { x1: cx, y1: -50, x2: cx, y2: winH + 100, stroke: 'rgba(255,255,255,0.1)', 'stroke-width': 2, 'stroke-dasharray': '10,10' }));
             svg.appendChild(makeSVG('text', { x: cx - 20, y: -20, fill: '#888', 'font-size': '20px', 'text-anchor': 'end' })).textContent = "ВУЛИЦЯ (Зовні)";
@@ -580,16 +588,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Window Profile
             svg.appendChild(makeSVG('rect', { x: cx - frameDepth/2, y: 0, width: frameDepth, height: winH, fill: '#ffffff', stroke: '#333', 'stroke-width': 4 }));
-            
+
             // Glass (Double/Triple)
             svg.appendChild(makeSVG('line', { x1: cx, y1: 10, x2: cx, y2: winH - 10, stroke: '#81d4fa', 'stroke-width': 10 }));
-            
+
             // Sill (Outside)
             if (payload.sill_width > 0) {
                 const sW = payload.sill_width;
                 svg.appendChild(makeSVG('path', { d: `M ${cx - frameDepth/2} ${winH} L ${cx - sW - frameDepth/2} ${winH + 20} L ${cx - sW - frameDepth/2} ${winH + 30} L ${cx - frameDepth/2} ${winH + 10} Z`, fill: '#999', stroke: '#666', 'stroke-width': 2 }));
             }
-            
+
             // Window Board (Inside)
             if (payload.window_board !== 'none') {
                 const bD = payload.window_board_depth || 200;
@@ -601,7 +609,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // --- FRONT/OUTSIDE VIEWS ---
         svg.setAttribute('viewBox', `${-pad} ${-pad} ${winW + pad * 2} ${winH + pad * 2}`);
         const frameColor = payload.color === 'anthracite' ? '#3E4349' : (payload.color === 'white' ? '#ffffff' : '#C38B40');
-        
+
         // Group for mirroring outside view
         const mainGroup = makeSVG('g', {});
         if (viewType === 'outside') {
@@ -615,7 +623,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const r = (ah / 2) + (winW**2 / (8 * ah));
             const pathData = `M 0 ${winH} L 0 ${ah} A ${r} ${r} 0 0 1 ${winW} ${ah} L ${winW} ${winH} Z`;
             mainGroup.appendChild(makeSVG('path', { d: pathData, fill: frameColor, stroke: '#333', 'stroke-width': 4 }));
-            
+
             // Glass Area Background
             const glassPath = `M 45 ${winH-45} L 45 ${ah} A ${r-45} ${r-45} 0 0 1 ${winW-45} ${ah} L ${winW-45} ${winH-45} Z`;
             mainGroup.appendChild(makeSVG('path', { d: glassPath, fill: '#e1f5fe', stroke: '#81d4fa', 'stroke-width': 1 }));
@@ -628,23 +636,23 @@ document.addEventListener('DOMContentLoaded', () => {
         let currentX = 0;
         payload.panels.forEach((p, i) => {
             const pW = winW * (p.proportion / 100);
-            
+
             // Panel Inner Frame
-            mainGroup.appendChild(makeSVG('rect', { 
-                x: currentX + 5, y: 5, width: pW - 10, height: winH - 10, 
-                fill: 'none', stroke: frameColor, 'stroke-width': 40 
+            mainGroup.appendChild(makeSVG('rect', {
+                x: currentX + 5, y: 5, width: pW - 10, height: winH - 10,
+                fill: 'none', stroke: frameColor, 'stroke-width': 40
             }));
 
             // Glass/Filling
-            mainGroup.appendChild(makeSVG('rect', { 
-                x: currentX + 25, y: 25, width: pW - 50, height: winH - 50, 
-                fill: '#b3e5fc', stroke: '#4fc3f7', 'stroke-width': 1 
+            mainGroup.appendChild(makeSVG('rect', {
+                x: currentX + 25, y: 25, width: pW - 50, height: winH - 50,
+                fill: '#b3e5fc', stroke: '#4fc3f7', 'stroke-width': 1
             }));
 
             // Dimensions (Only on inside view to avoid mirrored text)
             if (viewType === 'inside') {
-                svg.appendChild(makeSVG('text', { 
-                    x: currentX + pW/2, y: winH/2, 
+                svg.appendChild(makeSVG('text', {
+                    x: currentX + pW/2, y: winH/2,
                     fill: '#e65100', 'font-size': '42px', 'font-weight': 'bold', 'text-anchor': 'middle'
                 })).textContent = `${Math.round(pW - 100)} x ${Math.round(winH - 100)}`;
             }
@@ -655,18 +663,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 const isTilt = p.type.includes('tilt');
                 const xStart = isRight ? currentX + pW - 55 : currentX + 55;
                 const xEnd = isRight ? currentX + 55 : currentX + pW - 55;
-                
+
                 // Solid line for 'pull' (inside), dashed for 'push' (outside)
                 const arrowStyle = viewType === 'inside' ? 'none' : '20,10';
-                mainGroup.appendChild(makeSVG('path', { 
-                    d: `M ${xStart} 80 L ${xEnd} ${winH/2} L ${xStart} ${winH - 80}`, 
-                    fill: 'none', stroke: '#333', 'stroke-width': 5, 'stroke-dasharray': arrowStyle 
+                mainGroup.appendChild(makeSVG('path', {
+                    d: `M ${xStart} 80 L ${xEnd} ${winH/2} L ${xStart} ${winH - 80}`,
+                    fill: 'none', stroke: '#333', 'stroke-width': 5, 'stroke-dasharray': arrowStyle
                 }));
-                
+
                 if (isTilt) {
-                    mainGroup.appendChild(makeSVG('path', { 
-                        d: `M ${currentX + 80} ${winH - 80} L ${currentX + pW/2} 80 L ${currentX + pW - 80} ${winH - 80}`, 
-                        fill: 'none', stroke: '#555', 'stroke-width': 5, 'stroke-dasharray': arrowStyle 
+                    mainGroup.appendChild(makeSVG('path', {
+                        d: `M ${currentX + 80} ${winH - 80} L ${currentX + pW/2} 80 L ${currentX + pW - 80} ${winH - 80}`,
+                        fill: 'none', stroke: '#555', 'stroke-width': 5, 'stroke-dasharray': arrowStyle
                     }));
                 }
             }
@@ -676,9 +684,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 const netPattern = makeSVG('pattern', { id: `net-${i}`, x: 0, y: 0, width: 8, height: 8, patternUnits: 'userSpaceOnUse' });
                 netPattern.appendChild(makeSVG('path', { d: 'M 8 0 L 0 0 0 8', fill: 'none', stroke: 'rgba(0,0,0,0.5)', 'stroke-width': 1 }));
                 svg.appendChild(netPattern); // pattern definition outside mainGroup is fine
-                mainGroup.appendChild(makeSVG('rect', { 
-                    x: currentX + 30, y: 30, width: pW - 60, height: winH - 60, 
-                    fill: `url(#net-${i})`, opacity: 0.8 
+                mainGroup.appendChild(makeSVG('rect', {
+                    x: currentX + 30, y: 30, width: pW - 60, height: winH - 60,
+                    fill: `url(#net-${i})`, opacity: 0.8
                 }));
                 // We don't draw text "СІТКА" on outside view to avoid mirrored text, the grid is enough.
             }

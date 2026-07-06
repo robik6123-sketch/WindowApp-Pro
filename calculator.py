@@ -7,6 +7,78 @@ class CalculatorPricingError(Exception):
     """Base class for all calculator pricing errors."""
     pass
 
+def apply_commercial_adjustments(
+    materials_subtotal: float,
+    additional_costs_total: float,
+    additional_costs_breakdown: list,
+    commercial_settings,
+    tax_profile
+) -> dict:
+    """
+    Computes commercial adjustments with consistent rounding rules.
+    Used by calculate_project (for preview) and calculate_order_commercials (for checkout).
+    """
+    subtotal_before_markup = round(materials_subtotal + additional_costs_total, 2)
+    if not math.isfinite(subtotal_before_markup):
+        raise CalculatorPricingError("subtotal_before_markup is non-finite")
+
+    markup_rate = float(commercial_settings.markup_rate)
+    markup_amount = round(subtotal_before_markup * markup_rate / 100.0, 2)
+    if not math.isfinite(markup_amount):
+        raise CalculatorPricingError("markup_amount is non-finite")
+
+    subtotal_after_markup = round(subtotal_before_markup + markup_amount, 2)
+    if not math.isfinite(subtotal_after_markup):
+        raise CalculatorPricingError("subtotal_after_markup is non-finite")
+
+    discount_rate = float(commercial_settings.discount_rate)
+    discount_amount = round(subtotal_after_markup * discount_rate / 100.0, 2)
+    if not math.isfinite(discount_amount):
+        raise CalculatorPricingError("discount_amount is non-finite")
+
+    adjusted_subtotal = round(subtotal_after_markup - discount_amount, 2)
+    if not math.isfinite(adjusted_subtotal):
+        raise CalculatorPricingError("adjusted_subtotal is non-finite")
+
+    if adjusted_subtotal < -1e-9:
+        raise CalculatorPricingError("Adjusted subtotal is negative outside tolerance")
+    elif adjusted_subtotal < 0.0:
+        adjusted_subtotal = 0.0
+
+    tax_rate = float(tax_profile.rate)
+    included_in_price = tax_profile.included_in_price
+
+    if not included_in_price:
+        net_price = adjusted_subtotal
+        vat_amount = round(adjusted_subtotal * tax_rate, 2)
+        total = round(net_price + vat_amount, 2)
+    else:
+        total = adjusted_subtotal
+        vat_amount = round(adjusted_subtotal * tax_rate / (1.0 + tax_rate), 2)
+        net_price = round(total - vat_amount, 2)
+
+    if not math.isfinite(net_price) or not math.isfinite(vat_amount) or not math.isfinite(total):
+        raise CalculatorPricingError("Tax calculation resulted in non-finite values")
+
+    return {
+        "materials_subtotal": materials_subtotal,
+        "additional_costs_total": additional_costs_total,
+        "additional_costs_breakdown": additional_costs_breakdown,
+        "subtotal_before_markup": subtotal_before_markup,
+        "markup_rate": markup_rate,
+        "markup_amount": markup_amount,
+        "subtotal_after_markup": subtotal_after_markup,
+        "discount_rate": discount_rate,
+        "discount_amount": discount_amount,
+        "adjusted_subtotal": adjusted_subtotal,
+        "tax_rate": tax_rate,
+        "tax_included": included_in_price,
+        "net_price": net_price,
+        "vat_amount": vat_amount,
+        "total": total
+    }
+
+
 class UnknownMaterialError(CalculatorPricingError):
     """Raised when a material ID is not present in the global catalog."""
     pass
@@ -34,17 +106,17 @@ class GeometryEngine:
         # Radius of the circle passing through segment height and chord width
         # R = (h/2) + (w^2 / 8h)
         radius = (height / 2) + (width**2 / (8 * height))
-        
+
         # Central angle in radians: theta = 2 * arcsin(w / 2R)
         # Handle edge case where width > 2R (math error)
         sine_val = width / (2 * radius)
         if sine_val > 1.0: sine_val = 1.0
         angle = 2 * math.asin(sine_val)
-        
+
         arc_length = radius * angle
         # Segment area: A = (R^2 / 2) * (theta - sin(theta))
         segment_area = (radius**2 / 2) * (angle - math.sin(angle))
-        
+
         return radius, arc_length, segment_area
 
 class WindowCalculator:
@@ -54,7 +126,7 @@ class WindowCalculator:
         self.materials: dict = {}
         self.taxes: dict = {}
         self.use_firestore = use_firestore
-        
+
         if use_firestore and FIREBASE_AVAILABLE:
             self._init_firestore()
             self._load_from_firestore()
@@ -67,7 +139,7 @@ class WindowCalculator:
         try:
             # 1. Try to load from environment variable (JSON string) - for Cloud Run
             json_creds = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
-            
+
             if json_creds:
                 try:
                     cred_dict = json.loads(json_creds)
@@ -79,7 +151,7 @@ class WindowCalculator:
             else:
                 # 2. Fallback to local file (for local development)
                 cred = credentials.Certificate("service-account.json")
-                
+
             if not firebase_admin._apps:
                 firebase_admin.initialize_app(cred)
             self.db = firestore.client()
@@ -96,7 +168,7 @@ class WindowCalculator:
             hardware_ref = self.db.collection('materials').document('hardware').get()
             extras_ref = self.db.collection('materials').document('extras').get()
             colors_ref = self.db.collection('materials').document('colors').get()
-            
+
             self.materials = {
                 "profiles": profiles_ref.to_dict() or {},
                 "fillings": fillings_ref.to_dict() or {},
@@ -104,7 +176,7 @@ class WindowCalculator:
                 "extras": extras_ref.to_dict() or {},
                 "colors": colors_ref.to_dict() or {}
             }
-            
+
             taxes_ref = self.db.collection('settings').document('taxes').get()
             self.taxes = taxes_ref.to_dict() or {"no_tax": {"name": "Без податку", "rate": 0.0, "legal_reference": ""}}
         except Exception as e:
@@ -138,34 +210,34 @@ class WindowCalculator:
         prof_data = self.materials.get("profiles", {}).get(profile_key, {})
         glass_data = self.materials.get("fillings", {}).get(glass_key, {})
         limits = prof_data.get("limits", {})
-        
+
         if not limits:
             return {"valid": True, "messages": []}
-            
+
         max_w = limits.get("max_width", 1300)
         max_h = limits.get("max_height", 1400)
         max_wt = limits.get("max_weight", 80)
-        
+
         messages = []
         is_valid = True
-        
+
         for idx, panel in enumerate(panels):
             ptype = panel.get("type", "fixed")
             if ptype in ["turn", "tilt_turn", "door", "turn_right", "turn_left", "tilt_turn_right", "tilt_turn_left"]:
                 prop = float(panel.get("proportion", 100)) / 100.0
                 panel_w = width * prop
                 panel_h = height # Simplified for 1-tier
-                
+
                 glass_w = max(0.0, panel_w - 120.0)
                 glass_h = max(0.0, panel_h - 120.0)
                 glass_area_m2 = (glass_w * glass_h) / 1_000_000.0
-                
+
                 sash_perimeter_m = (panel_w + panel_h) * 2 / 1000.0
                 prof_weight = prof_data.get("weight_per_m", 1.2)
                 glass_weight = glass_data.get("weight_per_m2", 20.0)
-                
+
                 panel_weight = (sash_perimeter_m * prof_weight) + (glass_area_m2 * glass_weight)
-                
+
                 issues = []
                 if panel_w > max_w:
                     issues.append(f"ширина {round(panel_w,1)}мм > {max_w}мм")
@@ -173,12 +245,12 @@ class WindowCalculator:
                     issues.append(f"висота {round(panel_h,1)}мм > {max_h}мм")
                 if panel_weight > max_wt:
                     issues.append(f"вага {round(panel_weight, 1)}кг > {max_wt}кг")
-                    
+
                 if issues:
                     is_valid = False
                     msg = f"Стулка №{idx+1} ({ptype}) не проходить за лімітами профілю {prof_data.get('name', profile_key)}. Порушення: {', '.join(issues)}."
                     messages.append(msg)
-                    
+
         return {"valid": is_valid, "messages": messages}
 
     def calculate_project(self, payload: dict, pricing_context: PricingContext) -> dict:
@@ -190,7 +262,7 @@ class WindowCalculator:
         height = payload.get("height", 1000.0)
         is_arched = payload.get("type") == "arched"
         arc_height = payload.get("arc_height", width / 2) if is_arched else 0
-        
+
         profile_key = payload.get("profile", "REHAU_Euro_70")
         glass_key = payload.get("glass", "glass_24")
         color_key = payload.get("color", "white")
@@ -220,13 +292,13 @@ class WindowCalculator:
         if isinstance(price_mult, bool) or not isinstance(price_mult, (int, float)) or not math.isfinite(price_mult) or price_mult < 0.0:
             raise CalculatorPricingError(f"Invalid price_multiplier '{price_mult}' for color '{color_key}'.")
         color_multiplier = float(price_mult)
-        
+
         is_aluminum = prof_data.get("material_type") == "aluminum"
 
         # Geometry Logic
         frame_perimeter = (width + height) * 2
         glass_area_total = (width * height) / 1_000_000.0 # simplified base
-        
+
         bending_cost = 0.0
         if is_arched:
             radius, arc_len, segment_area = GeometryEngine.calculate_arc_params(width, arc_height)
@@ -235,7 +307,7 @@ class WindowCalculator:
             # Glass area adjustment
             rect_area = (width * (height - arc_height)) / 1_000_000.0
             glass_area_total = rect_area + (segment_area / 1_000_000.0)
-            
+
             # Bending extra cost
             if "bending" not in self.materials.get("extras", {}):
                 raise UnknownMaterialError("Extra 'bending' is not found in global catalog.")
@@ -247,9 +319,9 @@ class WindowCalculator:
 
         v_mullions_count = max(0, v_sections - 1)
         v_mullions_len = v_mullions_count * (height - (arc_height/2 if is_arched else 0))
-        
+
         total_profile_mm = frame_perimeter + v_mullions_len
-        
+
         hardware_cost = 0.0
         mosquito_nets_cost = 0.0
         hardware_list = []
@@ -258,18 +330,18 @@ class WindowCalculator:
             prop = float(panel.get("proportion", 100)) / 100.0
             panel_w = width * prop
             ptype = panel.get("type", "fixed")
-            
+
             if ptype != "fixed":
                 # Normalize type for hardware matching
                 base_hw = "tilt_turn" if "tilt_turn" in ptype else "turn"
                 if "door" in ptype: base_hw = "door_lock_strip"
-                
+
                 # Check hardware in catalog
                 if base_hw not in self.materials.get("hardware", {}):
                     raise UnknownMaterialError(f"Hardware '{base_hw}' is not found in global catalog.")
                 if base_hw not in pricing_context.resolved_prices.hardware:
                     raise MissingResolvedPriceError(f"Hardware price for '{base_hw}' is missing in PricingContext.")
-                
+
                 hw_price = float(pricing_context.resolved_prices.hardware[base_hw])
                 hw_name = self.materials.get("hardware", {}).get(base_hw, {}).get("name", base_hw)
                 hardware_list.append(hw_name)
@@ -312,7 +384,7 @@ class WindowCalculator:
 
         profile_total_cost = (total_profile_mm / 1000.0) * prof_price * color_multiplier
         glass_total_cost = glass_area_total * glass_price
-        
+
         # Materials Subtotal
         materials_subtotal = round(
             profile_total_cost +
@@ -375,48 +447,31 @@ class WindowCalculator:
 
         additional_costs_total = round(additional_costs_total, 2)
 
-        subtotal_before_markup = round(materials_subtotal + additional_costs_total, 2)
-        if not math.isfinite(subtotal_before_markup):
-            raise CalculatorPricingError("subtotal_before_markup is non-finite")
+        # Apply commercial adjustments using shared helper
+        adj = apply_commercial_adjustments(
+            materials_subtotal=materials_subtotal,
+            additional_costs_total=additional_costs_total,
+            additional_costs_breakdown=additional_costs_breakdown,
+            commercial_settings=pricing_context.commercial,
+            tax_profile=pricing_context.tax_profile
+        )
 
-        markup_rate = float(pricing_context.commercial.markup_rate)
-        markup_amount = round(subtotal_before_markup * markup_rate / 100.0, 2)
-        if not math.isfinite(markup_amount):
-            raise CalculatorPricingError("markup_amount is non-finite")
-
-        subtotal_after_markup = round(subtotal_before_markup + markup_amount, 2)
-        if not math.isfinite(subtotal_after_markup):
-            raise CalculatorPricingError("subtotal_after_markup is non-finite")
-
-        discount_rate = float(pricing_context.commercial.discount_rate)
-        discount_amount = round(subtotal_after_markup * discount_rate / 100.0, 2)
-        if not math.isfinite(discount_amount):
-            raise CalculatorPricingError("discount_amount is non-finite")
-
-        adjusted_subtotal = round(subtotal_after_markup - discount_amount, 2)
-        if not math.isfinite(adjusted_subtotal):
-            raise CalculatorPricingError("adjusted_subtotal is non-finite")
-
-        if adjusted_subtotal < -1e-9:
-            raise CalculatorPricingError("Adjusted subtotal is negative outside tolerance")
-        elif adjusted_subtotal < 0.0:
-            adjusted_subtotal = 0.0
+        subtotal_before_markup = adj["subtotal_before_markup"]
+        markup_rate = adj["markup_rate"]
+        markup_amount = adj["markup_amount"]
+        subtotal_after_markup = adj["subtotal_after_markup"]
+        discount_rate = adj["discount_rate"]
+        discount_amount = adj["discount_amount"]
+        adjusted_subtotal = adj["adjusted_subtotal"]
+        tax_rate = adj["tax_rate"]
+        included_in_price = adj["tax_included"]
+        net_price_rounded = adj["net_price"]
+        vat_amount_rounded = adj["vat_amount"]
+        total_rounded = adj["total"]
 
         tax_profile = pricing_context.tax_profile
-        tax_rate = float(tax_profile.rate)
-        included_in_price = tax_profile.included_in_price
 
-        if not included_in_price:
-            net_price_rounded = adjusted_subtotal
-            vat_amount_rounded = round(adjusted_subtotal * tax_rate, 2)
-            total_rounded = round(net_price_rounded + vat_amount_rounded, 2)
-        else:
-            total_rounded = adjusted_subtotal
-            vat_amount_rounded = round(adjusted_subtotal * tax_rate / (1.0 + tax_rate), 2)
-            net_price_rounded = round(total_rounded - vat_amount_rounded, 2)
 
-        if not math.isfinite(net_price_rounded) or not math.isfinite(vat_amount_rounded) or not math.isfinite(total_rounded):
-            raise CalculatorPricingError("Tax calculation resulted in non-finite values")
 
         # Look up legal reference from global self.taxes by exact name & rate match
         legal_ref = ""

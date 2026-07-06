@@ -851,6 +851,22 @@ class TestOrdersRoute(unittest.TestCase):
         user_payload = {"uid": "user_123", "email": "user@example.com"}
         app.dependency_overrides[verify_firebase_token] = lambda: user_payload
 
+        # Mock settings repo to match expected commercial adjustments
+        from user_settings_repository import UserSettingsRepositoryResult
+        from settings_models import UserSettingsStored, CommercialSettings, TaxProfileSettings
+        from datetime import datetime, timezone
+        settings = UserSettingsStored(
+            updated_at=datetime.now(timezone.utc),
+            commercial=CommercialSettings(markup_rate=10.0, discount_rate=5.0),
+            tax_profile=TaxProfileSettings(name="PDV", rate=0.20, included_in_price=False)
+        )
+        mock_repo = MagicMock()
+        mock_repo.get_user_settings.return_value = UserSettingsRepositoryResult(
+            settings=settings,
+            is_default=False
+        )
+        app.dependency_overrides[main.get_settings_repo] = lambda: mock_repo
+
         # Mock calculator return value
         trusted_result = {
             "status": "success",
@@ -862,6 +878,7 @@ class TestOrdersRoute(unittest.TestCase):
             "commercial_breakdown": {
                 "materials_subtotal": 3000.00,
                 "additional_costs_total": 500.00,
+                "additional_costs_breakdown": [],
                 "subtotal_before_markup": 3500.00,
                 "markup_rate": 10.0,
                 "markup_amount": 350.00,
@@ -936,7 +953,14 @@ class TestOrdersRoute(unittest.TestCase):
                 "net_price": 100.0,
                 "vat_amount": 20.0,
                 "cost_details": {"total": 120.0},
-                "commercial_breakdown": {"net_price": 100.0, "vat_amount": 20.0, "total": 120.0}
+                "commercial_breakdown": {
+                    "materials_subtotal": 100.0,
+                    "additional_costs_total": 0.0,
+                    "additional_costs_breakdown": [],
+                    "net_price": 100.0,
+                    "vat_amount": 20.0,
+                    "total": 120.0
+                }
             }
             cart_data = {
                 "items": [
@@ -980,7 +1004,14 @@ class TestOrdersRoute(unittest.TestCase):
                 "net_price": 100.0,
                 "vat_amount": 20.0,
                 "cost_details": {"total": 120.0},
-                "commercial_breakdown": {"net_price": 100.0, "vat_amount": 20.0, "total": 120.0}
+                "commercial_breakdown": {
+                    "materials_subtotal": 100.0,
+                    "additional_costs_total": 0.0,
+                    "additional_costs_breakdown": [],
+                    "net_price": 100.0,
+                    "vat_amount": 20.0,
+                    "total": 120.0
+                }
             }
             cart_data = {"items": [{"input": {"width": 1000.0, "height": 1000.0}}]}
             response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
@@ -1117,7 +1148,14 @@ class TestOrdersRoute(unittest.TestCase):
             "net_price": 100.0,
             "vat_amount": 20.0,
             "cost_details": {"total": 120.0},
-            "commercial_breakdown": {"net_price": 100.0, "vat_amount": 20.0, "total": 120.0}
+            "commercial_breakdown": {
+                "materials_subtotal": 100.0,
+                "additional_costs_total": 0.0,
+                "additional_costs_breakdown": [],
+                "net_price": 100.0,
+                "vat_amount": 20.0,
+                "total": 120.0
+            }
         }
 
         cart_data = {"items": [{"input": {"width": 1000, "height": 1000}}]}
@@ -1125,8 +1163,8 @@ class TestOrdersRoute(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         mock_db.collection.assert_called_once_with('orders')
 
-    def test_create_order_multi_item_with_fixed_per_order_rejected_with_422(self):
-        """create-order: Multi-item order with active fixed_per_order is rejected with 422"""
+    def test_create_order_multi_item_with_fixed_per_order_succeeds(self):
+        """create-order: Multi-item order with active fixed_per_order succeeds in Stage G"""
         user_payload = {"uid": "user_123", "email": "user@example.com"}
         app.dependency_overrides[verify_firebase_token] = lambda: user_payload
 
@@ -1161,10 +1199,26 @@ class TestOrdersRoute(unittest.TestCase):
                 {"input": {"width": 1200, "height": 1200}}
             ]
         }
-        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
-        self.assertEqual(response.status_code, 422)
-        self.assertIn("Multi-item orders are temporarily not supported with active fixed-per-order costs", response.json()["detail"])
-        mock_db.collection.assert_not_called()
+
+        with patch("main.calc.calculate_project") as mock_calc_project:
+            mock_calc_project.return_value = {
+                "status": "success",
+                "net_price": 100.0,
+                "vat_amount": 20.0,
+                "cost_details": {"total": 120.0},
+                "commercial_breakdown": {
+                    "materials_subtotal": 100.0,
+                    "additional_costs_total": 0.0,
+                    "additional_costs_breakdown": [],
+                    "net_price": 100.0,
+                    "vat_amount": 20.0,
+                    "total": 120.0
+                }
+            }
+            response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+            self.assertEqual(response.status_code, 200)
+            mock_db.collection.assert_called_once_with('orders')
+
 
     @patch("main.calc.calculate_project")
     def test_create_order_multi_item_without_fixed_per_order_works(self, mock_calc_project):
@@ -1173,7 +1227,7 @@ class TestOrdersRoute(unittest.TestCase):
         app.dependency_overrides[verify_firebase_token] = lambda: user_payload
 
         from user_settings_repository import UserSettingsRepositoryResult
-        from settings_models import UserSettingsStored, AdditionalCostSettings, CalculationType
+        from settings_models import UserSettingsStored, AdditionalCostSettings, CalculationType, TaxProfileSettings
         from datetime import datetime, timezone
         settings = UserSettingsStored(
             updated_at=datetime.now(timezone.utc),
@@ -1192,7 +1246,8 @@ class TestOrdersRoute(unittest.TestCase):
                     value=150.0,
                     enabled=True
                 )
-            ]
+            ],
+            tax_profile=TaxProfileSettings(name="PDV", rate=0.20, included_in_price=False)
         )
         mock_repo = MagicMock()
         mock_repo.get_user_settings.return_value = UserSettingsRepositoryResult(
@@ -1209,7 +1264,14 @@ class TestOrdersRoute(unittest.TestCase):
             "net_price": 100.0,
             "vat_amount": 20.0,
             "cost_details": {"total": 120.0},
-            "commercial_breakdown": {"net_price": 100.0, "vat_amount": 20.0, "total": 120.0}
+            "commercial_breakdown": {
+                "materials_subtotal": 100.0,
+                "additional_costs_total": 0.0,
+                "additional_costs_breakdown": [],
+                "net_price": 100.0,
+                "vat_amount": 20.0,
+                "total": 120.0
+            }
         }
 
         cart_data = {
@@ -1256,7 +1318,14 @@ class TestOrdersRoute(unittest.TestCase):
             "net_price": 100.0,
             "vat_amount": 20.0,
             "cost_details": {"total": 120.0},
-            "commercial_breakdown": {"net_price": 100.0, "vat_amount": 20.0, "total": 120.0}
+            "commercial_breakdown": {
+                "materials_subtotal": 100.0,
+                "additional_costs_total": 0.0,
+                "additional_costs_breakdown": [],
+                "net_price": 100.0,
+                "vat_amount": 20.0,
+                "total": 120.0
+            }
         }
 
         cart_data = {
@@ -1293,7 +1362,14 @@ class TestOrdersRoute(unittest.TestCase):
             "net_price": 100.0,
             "vat_amount": 20.0,
             "cost_details": {"total": 120.0},
-            "commercial_breakdown": {"net_price": 100.0, "vat_amount": 20.0, "total": 120.0}
+            "commercial_breakdown": {
+                "materials_subtotal": 100.0,
+                "additional_costs_total": 0.0,
+                "additional_costs_breakdown": [],
+                "net_price": 100.0,
+                "vat_amount": 20.0,
+                "total": 120.0
+            }
         }
 
         images_payload = {
@@ -1404,7 +1480,14 @@ class TestOrdersRoute(unittest.TestCase):
                 "net_price": 100.0,
                 "vat_amount": 20.0,
                 "cost_details": {"total": 120.0},
-                "commercial_breakdown": {"net_price": 100.0, "vat_amount": 20.0, "total": 120.0}
+                "commercial_breakdown": {
+                    "materials_subtotal": 100.0,
+                    "additional_costs_total": 0.0,
+                    "additional_costs_breakdown": [],
+                    "net_price": 100.0,
+                    "vat_amount": 20.0,
+                    "total": 120.0
+                }
             }
             cart_data = {"items": [{"input": {"width": 1000, "height": 1000}}]}
             response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
@@ -1541,7 +1624,14 @@ class TestOrdersRoute(unittest.TestCase):
                     "net_price": 100.0,
                     "vat_amount": 20.0,
                     "cost_details": {"total": 120.0},
-                    "commercial_breakdown": {"net_price": 100.0, "vat_amount": 20.0, "total": 120.0}
+                    "commercial_breakdown": {
+                        "materials_subtotal": 100.0,
+                        "additional_costs_total": 0.0,
+                        "additional_costs_breakdown": [],
+                        "net_price": 100.0,
+                        "vat_amount": 20.0,
+                        "total": 120.0
+                    }
                 }
             else:
                 raise CalculatorPricingError("Simulated calculator failure")
