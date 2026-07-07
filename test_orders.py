@@ -375,8 +375,8 @@ class TestOrdersRoute(unittest.TestCase):
         expected_cart_data["order_id"] = "ORD123"
         mock_generate_pdf.assert_called_once_with(expected_cart_data)
 
-    def test_generate_quote_other_user_403(self):
-        """19. generate-quote: Non-owner gets 403 Forbidden (no 500)"""
+    def test_generate_quote_other_user_returns_404(self):
+        """19. generate-quote: Non-owner gets 404 Not Found (no 500)"""
         user_payload = {"uid": "attacker_456", "email": "attacker@example.com"}
         app.dependency_overrides[verify_firebase_token] = lambda: user_payload
 
@@ -391,10 +391,10 @@ class TestOrdersRoute(unittest.TestCase):
         mock_db.collection.return_value.document.return_value.get.return_value = mock_doc
 
         response = client.get("/api/generate-quote/ORD123", headers={"Authorization": "Bearer valid_token"})
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["detail"], "Forbidden")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Замовлення не знайдено")
 
-    def test_generate_quote_missing_order_404(self):
+    def test_generate_quote_missing_order_returns_404(self):
         """20. generate-quote: Missing order -> 404 Not Found (no 500)"""
         user_payload = {"uid": "user_123", "email": "user@example.com"}
         app.dependency_overrides[verify_firebase_token] = lambda: user_payload
@@ -460,8 +460,8 @@ class TestOrdersRoute(unittest.TestCase):
         self.assertNotIn("FPDF layout rendering bug details", response.text)
         self.assertEqual(response.json()["detail"], "Internal Server Error")
 
-    def test_generate_quote_legacy_order_no_owner_uid_403(self):
-        """25. generate-quote: Legacy order without owner_uid -> 403 Forbidden"""
+    def test_generate_quote_legacy_order_no_owner_uid_returns_404(self):
+        """25. generate-quote: Legacy order without owner_uid -> 404 Not Found"""
         user_payload = {"uid": "user_123", "email": "user@example.com"}
         app.dependency_overrides[verify_firebase_token] = lambda: user_payload
 
@@ -476,8 +476,8 @@ class TestOrdersRoute(unittest.TestCase):
         mock_db.collection.return_value.document.return_value.get.return_value = mock_doc
 
         response = client.get("/api/generate-quote/ORD123", headers={"Authorization": "Bearer valid_token"})
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["detail"], "Forbidden")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "Замовлення не знайдено")
 
     def test_migrate_endpoint_removed(self):
         """26. migrate: POST /api/migrate endpoint is removed, not registered, and returns 404"""
@@ -1647,6 +1647,190 @@ class TestOrdersRoute(unittest.TestCase):
         response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
         self.assertEqual(response.status_code, 500)
         mock_db.collection.assert_not_called()
+
+    def test_list_orders_ignores_client_uid_email_params(self):
+        """test_list_orders_ignores_client_uid_email_params: List orders endpoint ignores client parameters for uid/email"""
+        user_payload = {"uid": "real_uid", "email": "real@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+        mock_db.collection.return_value.where.return_value.limit.return_value.stream.return_value = []
+
+        response = client.get("/api/orders?uid=attacker_uid&email=attacker@example.com&owner_uid=attacker_uid_2", headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+        # Verify query filters specifically by real_uid
+        mock_db.collection.return_value.where.assert_called_once_with('owner_uid', '==', 'real_uid')
+
+    def test_list_orders_sorting_robust_to_missing_timestamp(self):
+        """test_list_orders_sorting_robust_to_missing_timestamp: list orders handles missing timestamp robustly"""
+        user_payload = {"uid": "user_123"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        from datetime import datetime
+        mock_doc1 = MagicMock()
+        mock_doc1.to_dict.return_value = {"order_id": "ORD1", "owner_uid": "user_123"} # missing timestamp
+        mock_doc2 = MagicMock()
+        mock_doc2.to_dict.return_value = {"order_id": "ORD2", "owner_uid": "user_123", "timestamp": datetime(2026, 6, 20, 12, 0, 0)}
+        mock_doc3 = MagicMock()
+        mock_doc3.to_dict.return_value = {"order_id": "ORD3", "owner_uid": "user_123", "timestamp": datetime(2026, 6, 20, 15, 0, 0)}
+
+        mock_db.collection.return_value.where.return_value.limit.return_value.stream.return_value = [mock_doc1, mock_doc2, mock_doc3]
+
+        response = client.get("/api/orders", headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+        orders = response.json()
+        self.assertEqual(len(orders), 3)
+        # ORD3 (latest) should be first, then ORD2, then ORD1 (missing timestamp goes to the end)
+        self.assertEqual(orders[0]["order_id"], "ORD3")
+        self.assertEqual(orders[1]["order_id"], "ORD2")
+        self.assertEqual(orders[2]["order_id"], "ORD1")
+
+    def test_list_orders_sorting_robust_to_invalid_timestamp(self):
+        """test_list_orders_sorting_robust_to_invalid_timestamp: list orders handles invalid timestamp format robustly"""
+        user_payload = {"uid": "user_123"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_doc1 = MagicMock()
+        mock_doc1.to_dict.return_value = {"order_id": "ORD1", "owner_uid": "user_123", "timestamp": "invalid_timestamp_str"}
+        mock_doc2 = MagicMock()
+        mock_doc2.to_dict.return_value = {"order_id": "ORD2", "owner_uid": "user_123", "timestamp": "2026-06-20T12:00:00"}
+        mock_doc3 = MagicMock()
+        mock_doc3.to_dict.return_value = {"order_id": "ORD3", "owner_uid": "user_123", "timestamp": 123456789} # invalid type
+
+        mock_db.collection.return_value.where.return_value.limit.return_value.stream.return_value = [mock_doc1, mock_doc2, mock_doc3]
+
+        response = client.get("/api/orders", headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200)
+        orders = response.json()
+        self.assertEqual(len(orders), 3)
+        # ORD2 (valid) should be first, then ORD1 and ORD3 (invalid types/formats go to the end)
+        self.assertEqual(orders[0]["order_id"], "ORD2")
+        self.assertIn(orders[1]["order_id"], ["ORD1", "ORD3"])
+        self.assertIn(orders[2]["order_id"], ["ORD1", "ORD3"])
+
+    def test_get_owned_order_or_404_success(self):
+        """test_get_owned_order_or_404_success: helper successfully returns data"""
+        from main import get_owned_order_or_404
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        mock_doc.to_dict.return_value = {"owner_uid": "user_123", "data": "yes"}
+        mock_db.collection.return_value.document.return_value.get.return_value = mock_doc
+
+        result = get_owned_order_or_404("ORD123", "user_123")
+        self.assertEqual(result["data"], "yes")
+
+    def test_get_owned_order_or_404_missing_returns_404(self):
+        """test_get_owned_order_or_404_missing_returns_404: helper raises 404 if order does not exist"""
+        from main import get_owned_order_or_404
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_doc = MagicMock()
+        mock_doc.exists = False
+        mock_db.collection.return_value.document.return_value.get.return_value = mock_doc
+
+        with self.assertRaises(HTTPException) as exc:
+            get_owned_order_or_404("ORD123", "user_123")
+        self.assertEqual(exc.exception.status_code, 404)
+        self.assertEqual(exc.exception.detail, "Замовлення не знайдено")
+
+    def test_get_owned_order_or_404_wrong_owner_returns_404(self):
+        """test_get_owned_order_or_404_wrong_owner_returns_404: helper raises 404 if user is not the owner"""
+        from main import get_owned_order_or_404
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        mock_doc.to_dict.return_value = {"owner_uid": "another_user"}
+        mock_db.collection.return_value.document.return_value.get.return_value = mock_doc
+
+        with self.assertRaises(HTTPException) as exc:
+            get_owned_order_or_404("ORD123", "user_123")
+        self.assertEqual(exc.exception.status_code, 404)
+        self.assertEqual(exc.exception.detail, "Замовлення не знайдено")
+
+    def test_get_owned_order_or_404_no_owner_uid_returns_404(self):
+        """test_get_owned_order_or_404_no_owner_uid_returns_404: helper raises 404 if owner_uid is missing"""
+        from main import get_owned_order_or_404
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        mock_doc.to_dict.return_value = {"something": "else"}
+        mock_db.collection.return_value.document.return_value.get.return_value = mock_doc
+
+        with self.assertRaises(HTTPException) as exc:
+            get_owned_order_or_404("ORD123", "user_123")
+        self.assertEqual(exc.exception.status_code, 404)
+        self.assertEqual(exc.exception.detail, "Замовлення не знайдено")
+
+    def test_get_owned_order_or_404_db_error_safe(self):
+        """test_get_owned_order_or_404_db_error_safe: helper maps database errors to 500"""
+        from main import get_owned_order_or_404
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+        mock_db.collection.side_effect = Exception("Firestore socket timeout error")
+
+        with self.assertRaises(HTTPException) as exc:
+            get_owned_order_or_404("ORD123", "user_123")
+        self.assertEqual(exc.exception.status_code, 500)
+        self.assertEqual(exc.exception.detail, "Internal Server Error")
+
+    def test_get_owned_order_or_404_non_string_owner_uid_returns_404(self):
+        """test_get_owned_order_or_404_non_string_owner_uid_returns_404: helper raises 404 if owner_uid is not a string"""
+        from main import get_owned_order_or_404
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_doc = MagicMock()
+        mock_doc.exists = True
+        mock_doc.to_dict.return_value = {"owner_uid": 12345} # non-string
+        mock_db.collection.return_value.document.return_value.get.return_value = mock_doc
+
+        with self.assertRaises(HTTPException) as exc:
+            get_owned_order_or_404("ORD123", "user_123")
+        self.assertEqual(exc.exception.status_code, 404)
+        self.assertEqual(exc.exception.detail, "Замовлення не знайдено")
+
+    def test_get_owned_order_or_404_padded_owner_uid_returns_404(self):
+        """test_get_owned_order_or_404_padded_owner_uid_returns_404: helper raises 404 if owner_uid has leading/trailing spaces"""
+        from main import get_owned_order_or_404
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        # Test case 1: leading space
+        mock_doc1 = MagicMock()
+        mock_doc1.exists = True
+        mock_doc1.to_dict.return_value = {"owner_uid": " user_123"}
+        mock_db.collection.return_value.document.return_value.get.return_value = mock_doc1
+
+        with self.assertRaises(HTTPException) as exc:
+            get_owned_order_or_404("ORD123", "user_123")
+        self.assertEqual(exc.exception.status_code, 404)
+        self.assertEqual(exc.exception.detail, "Замовлення не знайдено")
+
+        # Test case 2: trailing space
+        mock_doc2 = MagicMock()
+        mock_doc2.exists = True
+        mock_doc2.to_dict.return_value = {"owner_uid": "user_123 "}
+        mock_db.collection.return_value.document.return_value.get.return_value = mock_doc2
+
+        with self.assertRaises(HTTPException) as exc:
+            get_owned_order_or_404("ORD123", "user_123")
+        self.assertEqual(exc.exception.status_code, 404)
+        self.assertEqual(exc.exception.detail, "Замовлення не знайдено")
 
 if __name__ == "__main__":
     unittest.main()

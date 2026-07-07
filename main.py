@@ -120,6 +120,42 @@ def get_settings_repo() -> UserSettingsRepository:
         )
     return UserSettingsRepository(db)
 
+def get_owned_order_or_404(order_id: str, uid: str) -> dict:
+    if not USE_FIRESTORE:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is temporarily unavailable"
+        )
+    try:
+        doc_ref = calc.db.collection('orders').document(order_id).get()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal Server Error"
+        ) from exc
+
+    if not doc_ref.exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Замовлення не знайдено"
+        )
+
+    data = doc_ref.to_dict()
+    if data is None or not isinstance(data, dict):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Замовлення не знайдено"
+        )
+
+    owner_uid = data.get("owner_uid")
+    if not isinstance(owner_uid, str) or owner_uid != uid:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Замовлення не знайдено"
+        )
+
+    return data
+
 @app.get("/")
 async def root():
     """Serves the main frontend interface"""
@@ -507,18 +543,8 @@ async def get_quote_pdf(order_id: str, current_user: dict = Depends(verify_fireb
         raise HTTPException(status_code=400, detail="Firestore is required for history-based PDF")
 
     try:
-        try:
-            doc_ref = calc.db.collection('orders').document(order_id).get()
-        except Exception:
-            raise HTTPException(status_code=500, detail="Internal Server Error")
-
-        if not doc_ref.exists:
-            raise HTTPException(status_code=404, detail="Замовлення не знайдено")
-
-        data = doc_ref.to_dict()
-
-        if data.get("owner_uid") != current_user["uid"]:
-            raise HTTPException(status_code=403, detail="Forbidden")
+        uid = get_authenticated_uid(current_user)
+        data = get_owned_order_or_404(order_id, uid)
 
         if "cart" in data:
             cart_data = data["cart"]
@@ -552,10 +578,34 @@ async def get_user_orders(current_user: dict = Depends(verify_firebase_token)):
     if not USE_FIRESTORE:
         return []
     try:
-        query = calc.db.collection('orders').where('owner_uid', '==', current_user["uid"])
+        uid = get_authenticated_uid(current_user)
+        query = calc.db.collection('orders').where('owner_uid', '==', uid)
         docs = query.limit(20).stream()
-        results = [doc.to_dict() for doc in docs]
-        results.sort(key=lambda x: x.get('timestamp'), reverse=True)
+
+        results = []
+        for doc in docs:
+            d = doc.to_dict()
+            if d and isinstance(d, dict) and d.get("owner_uid") == uid:
+                results.append(d)
+
+        # Safe in-memory sorting that tolerates missing/invalid timestamps
+        def safe_timestamp_key(order: dict):
+            ts = order.get("timestamp")
+            if isinstance(ts, datetime):
+                if ts.tzinfo is not None:
+                    ts = ts.replace(tzinfo=None)
+                return (1, ts)
+            elif isinstance(ts, str):
+                try:
+                    dt = datetime.fromisoformat(ts)
+                    if dt.tzinfo is not None:
+                        dt = dt.replace(tzinfo=None)
+                    return (1, dt)
+                except Exception:
+                    pass
+            return (0, datetime.min)
+
+        results.sort(key=safe_timestamp_key, reverse=True)
         return results[:10]
     except HTTPException:
         raise
