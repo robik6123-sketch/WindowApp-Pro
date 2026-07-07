@@ -22,6 +22,7 @@ import os
 import json
 import base64
 import uuid
+import struct
 from datetime import datetime
 import firebase_admin
 from firebase_admin import auth
@@ -96,6 +97,8 @@ calc = WindowCalculator(use_firestore=USE_FIRESTORE)
 
 MAX_IMAGE_BYTES = 150 * 1024
 MAX_ORDER_IMAGES_BYTES = 600 * 1024
+MAX_IMAGE_WIDTH = 2000
+MAX_IMAGE_HEIGHT = 2000
 
 async def get_current_user(res: HTTPAuthorizationCredentials = Depends(security)):
     """Verifies Firebase ID Token"""
@@ -424,6 +427,40 @@ def create_order(
                         raise HTTPException(
                             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                             detail=f"Item {idx} image {k} is not a valid PNG image"
+                        )
+                    if len(decoded) < 29:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Item {idx} image {k} has invalid PNG structure"
+                        )
+                    try:
+                        chunk_length = struct.unpack(">I", decoded[8:12])[0]
+                    except Exception:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Item {idx} image {k} has invalid PNG structure"
+                        )
+                    if decoded[12:16] != b"IHDR" or chunk_length != 13:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Item {idx} image {k} has invalid PNG structure"
+                        )
+                    try:
+                        width, height = struct.unpack(">II", decoded[16:24])
+                    except Exception:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Item {idx} image {k} has invalid PNG structure"
+                        )
+                    if width <= 0 or height <= 0:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Item {idx} image {k} has invalid PNG dimensions"
+                        )
+                    if width > MAX_IMAGE_WIDTH or height > MAX_IMAGE_HEIGHT:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Item {idx} image {k} exceeds allowed PNG dimensions of 2000x2000"
                         )
                     decoded_size = len(decoded)
                     if decoded_size > MAX_IMAGE_BYTES:

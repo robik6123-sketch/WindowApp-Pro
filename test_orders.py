@@ -1607,6 +1607,20 @@ class TestOrdersRoute(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         mock_db.collection.assert_not_called()
 
+    def _make_dummy_png_bytes(self, width=100, height=100, total_size=1000):
+        import struct
+        # signature: 8 bytes
+        sig = b"\x89PNG\r\n\x1a\n"
+        # IHDR chunk: length (4) + type (4) + data (13) + CRC (4) = 25 bytes
+        ihdr_len = struct.pack(">I", 13)
+        ihdr_type = b"IHDR"
+        ihdr_data = struct.pack(">II", width, height) + b"\x08\x02\x00\x00\x00"
+        ihdr_crc = b"\x00\x00\x00\x00"
+        header = sig + ihdr_len + ihdr_type + ihdr_data + ihdr_crc
+        if len(header) < total_size:
+            header += b"A" * (total_size - len(header))
+        return header
+
     def test_create_order_image_exceeds_individual_limit(self):
         """create-order: Single image exceeding individual 150 KB limit returns 422 and prevents write"""
         import base64
@@ -1616,8 +1630,8 @@ class TestOrdersRoute(unittest.TestCase):
         mock_db = MagicMock()
         main.calc.db = mock_db
 
-        # Create base64 payload of 150 KB + 1 byte starting with PNG signature (153601 bytes)
-        large_bytes = b"\x89PNG\r\n\x1a\n" + b"A" * (150 * 1024 + 1 - 8)
+        # Create base64 payload of 150 KB + 1 byte (153601 bytes) using valid PNG helper
+        large_bytes = self._make_dummy_png_bytes(width=100, height=100, total_size=150 * 1024 + 1)
         large_b64 = base64.b64encode(large_bytes).decode("utf-8")
         oversized_image = f"data:image/png;base64,{large_b64}"
 
@@ -1647,8 +1661,8 @@ class TestOrdersRoute(unittest.TestCase):
         mock_db = MagicMock()
         main.calc.db = mock_db
 
-        # 5 images of 130 KB each (130 * 1024 bytes) starting with PNG signature -> Total 650 KB (exceeds 600 KB cumulative limit)
-        image_bytes = b"\x89PNG\r\n\x1a\n" + b"A" * (130 * 1024 - 8)
+        # 5 images of 130 KB each (130 * 1024 bytes) using valid PNG helper -> Total 650 KB (exceeds 600 KB cumulative limit)
+        image_bytes = self._make_dummy_png_bytes(width=100, height=100, total_size=130 * 1024)
         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
         valid_b64_image = f"data:image/png;base64,{image_b64}"
 
@@ -1698,6 +1712,99 @@ class TestOrdersRoute(unittest.TestCase):
         response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
         self.assertEqual(response.status_code, 422)
         self.assertIn("Item 0 image front is not a valid PNG image", response.json()["detail"])
+        mock_db.collection.assert_not_called()
+
+    def test_create_order_image_rejects_fake_png_signature_without_ihdr(self):
+        """create-order: Decoded image payload with PNG signature but missing/invalid IHDR is rejected with 422"""
+        import base64
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        # Valid PNG signature, but too short / missing IHDR
+        fake_png_bytes = b"\x89PNG\r\n\x1a\n" + b"some random trailing bytes that are not an IHDR chunk"
+        fake_png_b64 = base64.b64encode(fake_png_bytes).decode("utf-8")
+        fake_image = f"data:image/png;base64,{fake_png_b64}"
+
+        cart_data = {
+            "items": [
+                {
+                    "input": {
+                        "width": 1000,
+                        "height": 1000,
+                        "images": {"front": fake_image}
+                    }
+                }
+            ]
+        }
+
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("Item 0 image front has invalid PNG structure", response.json()["detail"])
+        mock_db.collection.assert_not_called()
+
+    def test_create_order_image_rejects_png_with_zero_dimensions(self):
+        """create-order: PNG image with zero dimensions is rejected with 422"""
+        import base64
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        # PNG bytes with width = 0, height = 100
+        bad_png_bytes = self._make_dummy_png_bytes(width=0, height=100, total_size=100)
+        bad_png_b64 = base64.b64encode(bad_png_bytes).decode("utf-8")
+        bad_image = f"data:image/png;base64,{bad_png_b64}"
+
+        cart_data = {
+            "items": [
+                {
+                    "input": {
+                        "width": 1000,
+                        "height": 1000,
+                        "images": {"front": bad_image}
+                    }
+                }
+            ]
+        }
+
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("Item 0 image front has invalid PNG dimensions", response.json()["detail"])
+        mock_db.collection.assert_not_called()
+
+    def test_create_order_image_rejects_png_with_excessive_dimensions(self):
+        """create-order: PNG image with dimensions exceeding 2000x2000 limit is rejected with 422"""
+        import base64
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        # PNG bytes with width = 2001, height = 100 (exceeds MAX_IMAGE_WIDTH = 2000)
+        bad_png_bytes = self._make_dummy_png_bytes(width=2001, height=100, total_size=100)
+        bad_png_b64 = base64.b64encode(bad_png_bytes).decode("utf-8")
+        bad_image = f"data:image/png;base64,{bad_png_b64}"
+
+        cart_data = {
+            "items": [
+                {
+                    "input": {
+                        "width": 1000,
+                        "height": 1000,
+                        "images": {"front": bad_image}
+                    }
+                }
+            ]
+        }
+
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("Item 0 image front exceeds allowed PNG dimensions of 2000x2000", response.json()["detail"])
         mock_db.collection.assert_not_called()
 
     @patch("main.calc.calculate_project")
