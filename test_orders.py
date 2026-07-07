@@ -1777,7 +1777,7 @@ class TestOrdersRoute(unittest.TestCase):
         mock_db.collection.assert_not_called()
 
     def test_create_order_image_rejects_png_with_excessive_dimensions(self):
-        """create-order: PNG image with dimensions exceeding 2000x2000 limit is rejected with 422"""
+        """create-order: PNG image with dimensions exceeding 2000x4000 limit is rejected with 422"""
         import base64
         user_payload = {"uid": "user_123", "email": "user@example.com"}
         app.dependency_overrides[verify_firebase_token] = lambda: user_payload
@@ -1785,8 +1785,8 @@ class TestOrdersRoute(unittest.TestCase):
         mock_db = MagicMock()
         main.calc.db = mock_db
 
-        # PNG bytes with width = 2001, height = 100 (exceeds MAX_IMAGE_WIDTH = 2000)
-        bad_png_bytes = self._make_dummy_png_bytes(width=2001, height=100, total_size=100)
+        # PNG bytes with width = 100, height = 4001 (exceeds MAX_IMAGE_HEIGHT = 4000)
+        bad_png_bytes = self._make_dummy_png_bytes(width=100, height=4001, total_size=100)
         bad_png_b64 = base64.b64encode(bad_png_bytes).decode("utf-8")
         bad_image = f"data:image/png;base64,{bad_png_b64}"
 
@@ -1804,8 +1804,54 @@ class TestOrdersRoute(unittest.TestCase):
 
         response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
         self.assertEqual(response.status_code, 422)
-        self.assertIn("Item 0 image front exceeds allowed PNG dimensions of 2000x2000", response.json()["detail"])
+        self.assertIn("Item 0 image front exceeds allowed PNG dimensions of 2000x4000", response.json()["detail"])
         mock_db.collection.assert_not_called()
+
+    @patch("main.calc.calculate_project")
+    def test_create_order_accepts_frontend_realistic_tall_png_dimensions(self, mock_calc_project):
+        """create-order: PNG image with dimensions 1000x2500 is accepted, response is 200 and Firestore write executes"""
+        import base64
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        mock_calc_project.return_value = {
+            "status": "success",
+            "net_price": 100.0,
+            "vat_amount": 20.0,
+            "cost_details": {"total": 120.0},
+            "commercial_breakdown": {
+                "materials_subtotal": 100.0,
+                "additional_costs_total": 0.0,
+                "additional_costs_breakdown": [],
+                "net_price": 100.0,
+                "vat_amount": 20.0,
+                "total": 120.0
+            }
+        }
+
+        # PNG bytes with width = 1000, height = 2500 (within width 2000 and height 4000 limits)
+        tall_png_bytes = self._make_dummy_png_bytes(width=1000, height=2500, total_size=100)
+        tall_png_b64 = base64.b64encode(tall_png_bytes).decode("utf-8")
+        tall_image = f"data:image/png;base64,{tall_png_b64}"
+
+        cart_data = {
+            "items": [
+                {
+                    "input": {
+                        "width": 1000,
+                        "height": 1000,
+                        "images": {"front": tall_image}
+                    }
+                }
+            ]
+        }
+
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 200, response.text)
+        mock_db.collection.assert_called_once_with('orders')
 
     @patch("main.calc.calculate_project")
     def test_create_order_multi_item_atomicity_calculation_failure(self, mock_calc_project):

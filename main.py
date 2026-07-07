@@ -98,7 +98,7 @@ calc = WindowCalculator(use_firestore=USE_FIRESTORE)
 MAX_IMAGE_BYTES = 150 * 1024
 MAX_ORDER_IMAGES_BYTES = 600 * 1024
 MAX_IMAGE_WIDTH = 2000
-MAX_IMAGE_HEIGHT = 2000
+MAX_IMAGE_HEIGHT = 4000
 
 async def get_current_user(res: HTTPAuthorizationCredentials = Depends(security)):
     """Verifies Firebase ID Token"""
@@ -460,7 +460,7 @@ def create_order(
                     if width > MAX_IMAGE_WIDTH or height > MAX_IMAGE_HEIGHT:
                         raise HTTPException(
                             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail=f"Item {idx} image {k} exceeds allowed PNG dimensions of 2000x2000"
+                            detail=f"Item {idx} image {k} exceeds allowed PNG dimensions of {MAX_IMAGE_WIDTH}x{MAX_IMAGE_HEIGHT}"
                         )
                     decoded_size = len(decoded)
                     if decoded_size > MAX_IMAGE_BYTES:
