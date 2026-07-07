@@ -420,6 +420,11 @@ def create_order(
                             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                             detail=f"Item {idx} image {k} has invalid base64 content"
                         )
+                    if not decoded.startswith(b"\x89PNG\r\n\x1a\n"):
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Item {idx} image {k} is not a valid PNG image"
+                        )
                     decoded_size = len(decoded)
                     if decoded_size > MAX_IMAGE_BYTES:
                         raise HTTPException(
