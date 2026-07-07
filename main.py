@@ -94,6 +94,9 @@ app.add_middleware(
 USE_FIRESTORE = os.environ.get("USE_FIRESTORE", "true").lower() == "true"
 calc = WindowCalculator(use_firestore=USE_FIRESTORE)
 
+MAX_IMAGE_BYTES = 150 * 1024
+MAX_ORDER_IMAGES_BYTES = 600 * 1024
+
 async def get_current_user(res: HTTPAuthorizationCredentials = Depends(security)):
     """Verifies Firebase ID Token"""
     try:
@@ -361,6 +364,7 @@ def create_order(
             update={"additional_costs": item_only_costs}
         )
 
+        total_order_images_size = 0
         trusted_items = []
         for idx, item in enumerate(items):
             if not isinstance(item, dict):
@@ -410,11 +414,23 @@ def create_order(
                             detail=f"Item {idx} image {k} has empty payload"
                         )
                     try:
-                        base64.b64decode(payload_str, validate=True)
+                        decoded = base64.b64decode(payload_str, validate=True)
                     except Exception:
                         raise HTTPException(
                             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                             detail=f"Item {idx} image {k} has invalid base64 content"
+                        )
+                    decoded_size = len(decoded)
+                    if decoded_size > MAX_IMAGE_BYTES:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail=f"Item {idx} image {k} exceeds allowed size of 150 KB"
+                        )
+                    total_order_images_size += decoded_size
+                    if total_order_images_size > MAX_ORDER_IMAGES_BYTES:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="Order total images size exceeds limit of 600 KB"
                         )
 
             # Validate input using CalculateRequest

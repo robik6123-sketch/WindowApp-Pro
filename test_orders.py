@@ -1607,6 +1607,69 @@ class TestOrdersRoute(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         mock_db.collection.assert_not_called()
 
+    def test_create_order_image_exceeds_individual_limit(self):
+        """create-order: Single image exceeding individual 150 KB limit returns 422 and prevents write"""
+        import base64
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        # Create base64 payload of 150 KB + 1 byte (153601 bytes)
+        large_bytes = b"A" * (150 * 1024 + 1)
+        large_b64 = base64.b64encode(large_bytes).decode("utf-8")
+        oversized_image = f"data:image/png;base64,{large_b64}"
+
+        cart_data = {
+            "items": [
+                {
+                    "input": {
+                        "width": 1000,
+                        "height": 1000,
+                        "images": {"front": oversized_image}
+                    }
+                }
+            ]
+        }
+
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("Item 0 image front exceeds allowed size of 150 KB", response.json()["detail"])
+        mock_db.collection.assert_not_called()
+
+    def test_create_order_images_exceed_order_limit(self):
+        """create-order: Total images size exceeding cumulative 600 KB limit returns 422 and prevents write"""
+        import base64
+        user_payload = {"uid": "user_123", "email": "user@example.com"}
+        app.dependency_overrides[verify_firebase_token] = lambda: user_payload
+
+        mock_db = MagicMock()
+        main.calc.db = mock_db
+
+        # 5 images of 130 KB each (130 * 1024 bytes) -> Total 650 KB (exceeds 600 KB cumulative limit)
+        image_bytes = b"A" * (130 * 1024)
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        valid_b64_image = f"data:image/png;base64,{image_b64}"
+
+        cart_data = {
+            "items": [
+                {
+                    "input": {
+                        "width": 1000,
+                        "height": 1000,
+                        "images": {"front": valid_b64_image}
+                    }
+                }
+                for _ in range(5)
+            ]
+        }
+
+        response = client.post("/api/create-order", json=cart_data, headers={"Authorization": "Bearer valid_token"})
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("Order total images size exceeds limit of 600 KB", response.json()["detail"])
+        mock_db.collection.assert_not_called()
+
     @patch("main.calc.calculate_project")
     def test_create_order_multi_item_atomicity_calculation_failure(self, mock_calc_project):
         """create-order: multi-item order where item 2 calculation raises exception results in no write"""
