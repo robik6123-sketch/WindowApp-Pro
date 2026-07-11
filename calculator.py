@@ -3,6 +3,11 @@ import math
 import os
 from settings_models import PricingContext
 
+FIREBASE_STORAGE_BUCKET = os.environ.get(
+    "FIREBASE_STORAGE_BUCKET",
+    "windowapp-pro-2026.appspot.com"
+)
+
 class CalculatorPricingError(Exception):
     """Base class for all calculator pricing errors."""
     pass
@@ -89,7 +94,7 @@ class MissingResolvedPriceError(CalculatorPricingError):
 
 try:
     import firebase_admin
-    from firebase_admin import credentials, firestore
+    from firebase_admin import credentials, firestore, storage
     FIREBASE_AVAILABLE = True
 except ImportError:
     FIREBASE_AVAILABLE = False
@@ -153,7 +158,9 @@ class WindowCalculator:
                 cred = credentials.Certificate("service-account.json")
 
             if not firebase_admin._apps:
-                firebase_admin.initialize_app(cred)
+                firebase_admin.initialize_app(cred, {
+                    "storageBucket": FIREBASE_STORAGE_BUCKET
+                })
             self.db = firestore.client()
             print("✅ Firestore initialized successfully")
         except Exception as e:
