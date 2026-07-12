@@ -1621,6 +1621,40 @@ class TestOrdersRoute(unittest.TestCase):
             header += b"A" * (total_size - len(header))
         return header
 
+    def test_validate_png_data_url_returns_decoded_bytes_and_metadata(self):
+        """PNG helper returns decoded bytes and trusted image metadata."""
+        import base64
+        png_bytes = self._make_dummy_png_bytes(width=640, height=480, total_size=100)
+        image_data_url = f"data:image/png;base64,{base64.b64encode(png_bytes).decode('utf-8')}"
+        decoded, metadata = main.validate_png_data_url(image_data_url, 2, "outside")
+        self.assertEqual(decoded, png_bytes)
+        self.assertEqual(metadata, {"width": 640, "height": 480, "size_bytes": len(png_bytes)})
+
+    def test_validate_png_data_url_rejects_invalid_images_with_existing_details(self):
+        """PNG helper preserves the route's existing 422 validation details."""
+        import base64
+        valid_png = self._make_dummy_png_bytes(width=100, height=100, total_size=100)
+        invalid_ihdr = bytearray(valid_png)
+        invalid_ihdr[12:16] = b"IDAT"
+        cases = [
+            (123, "Item 3 image side must be a string"),
+            ("https://example.com/image.png", "Item 3 image side has invalid prefix"),
+            ("data:image/png;base64,", "Item 3 image side has empty payload"),
+            ("data:image/png;base64,!!!", "Item 3 image side has invalid base64 content"),
+            (f"data:image/png;base64,{base64.b64encode(b'not png').decode('utf-8')}", "Item 3 image side is not a valid PNG image"),
+            (f"data:image/png;base64,{base64.b64encode(b'\x89PNG\r\n\x1a\n').decode('utf-8')}", "Item 3 image side has invalid PNG structure"),
+            (f"data:image/png;base64,{base64.b64encode(bytes(invalid_ihdr)).decode('utf-8')}", "Item 3 image side has invalid PNG structure"),
+            (f"data:image/png;base64,{base64.b64encode(self._make_dummy_png_bytes(width=0, height=100, total_size=100)).decode('utf-8')}", "Item 3 image side has invalid PNG dimensions"),
+            (f"data:image/png;base64,{base64.b64encode(self._make_dummy_png_bytes(width=2001, height=100, total_size=100)).decode('utf-8')}", "Item 3 image side exceeds allowed PNG dimensions of 2000x4000"),
+            (f"data:image/png;base64,{base64.b64encode(self._make_dummy_png_bytes(width=100, height=100, total_size=150 * 1024 + 1)).decode('utf-8')}", "Item 3 image side exceeds allowed size of 150 KB"),
+        ]
+        for image_data_url, expected_detail in cases:
+            with self.subTest(expected_detail=expected_detail):
+                with self.assertRaises(HTTPException) as raised:
+                    main.validate_png_data_url(image_data_url, 3, "side")
+                self.assertEqual(raised.exception.status_code, 422)
+                self.assertEqual(raised.exception.detail, expected_detail)
+
     def test_create_order_image_exceeds_individual_limit(self):
         """create-order: Single image exceeding individual 150 KB limit returns 422 and prevents write"""
         import base64

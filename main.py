@@ -100,6 +100,42 @@ MAX_ORDER_IMAGES_BYTES = 600 * 1024
 MAX_IMAGE_WIDTH = 2000
 MAX_IMAGE_HEIGHT = 4000
 
+def validate_png_data_url(image_data_url, item_index: int, image_key: str):
+    if not isinstance(image_data_url, str):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Item {item_index} image {image_key} must be a string")
+    prefix = "data:image/png;base64,"
+    if not image_data_url.startswith(prefix):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Item {item_index} image {image_key} has invalid prefix")
+    payload_str = image_data_url[len(prefix):]
+    if not payload_str:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Item {item_index} image {image_key} has empty payload")
+    try:
+        decoded = base64.b64decode(payload_str, validate=True)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Item {item_index} image {image_key} has invalid base64 content")
+    if not decoded.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Item {item_index} image {image_key} is not a valid PNG image")
+    if len(decoded) < 29:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Item {item_index} image {image_key} has invalid PNG structure")
+    try:
+        chunk_length = struct.unpack(">I", decoded[8:12])[0]
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Item {item_index} image {image_key} has invalid PNG structure")
+    if decoded[12:16] != b"IHDR" or chunk_length != 13:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Item {item_index} image {image_key} has invalid PNG structure")
+    try:
+        width, height = struct.unpack(">II", decoded[16:24])
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Item {item_index} image {image_key} has invalid PNG structure")
+    if width <= 0 or height <= 0:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Item {item_index} image {image_key} has invalid PNG dimensions")
+    if width > MAX_IMAGE_WIDTH or height > MAX_IMAGE_HEIGHT:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Item {item_index} image {image_key} exceeds allowed PNG dimensions of {MAX_IMAGE_WIDTH}x{MAX_IMAGE_HEIGHT}")
+    decoded_size = len(decoded)
+    if decoded_size > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Item {item_index} image {image_key} exceeds allowed size of 150 KB")
+    return decoded, {"width": width, "height": height, "size_bytes": decoded_size}
+
 async def get_current_user(res: HTTPAuthorizationCredentials = Depends(security)):
     """Verifies Firebase ID Token"""
     try:
@@ -399,76 +435,8 @@ def create_order(
                             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                             detail=f"Item {idx} image key {k} is invalid"
                         )
-                    if not isinstance(v, str):
-                        raise HTTPException(
-                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail=f"Item {idx} image {k} must be a string"
-                        )
-                    prefix = "data:image/png;base64,"
-                    if not v.startswith(prefix):
-                        raise HTTPException(
-                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail=f"Item {idx} image {k} has invalid prefix"
-                        )
-                    payload_str = v[len(prefix):]
-                    if not payload_str:
-                        raise HTTPException(
-                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail=f"Item {idx} image {k} has empty payload"
-                        )
-                    try:
-                        decoded = base64.b64decode(payload_str, validate=True)
-                    except Exception:
-                        raise HTTPException(
-                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail=f"Item {idx} image {k} has invalid base64 content"
-                        )
-                    if not decoded.startswith(b"\x89PNG\r\n\x1a\n"):
-                        raise HTTPException(
-                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail=f"Item {idx} image {k} is not a valid PNG image"
-                        )
-                    if len(decoded) < 29:
-                        raise HTTPException(
-                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail=f"Item {idx} image {k} has invalid PNG structure"
-                        )
-                    try:
-                        chunk_length = struct.unpack(">I", decoded[8:12])[0]
-                    except Exception:
-                        raise HTTPException(
-                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail=f"Item {idx} image {k} has invalid PNG structure"
-                        )
-                    if decoded[12:16] != b"IHDR" or chunk_length != 13:
-                        raise HTTPException(
-                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail=f"Item {idx} image {k} has invalid PNG structure"
-                        )
-                    try:
-                        width, height = struct.unpack(">II", decoded[16:24])
-                    except Exception:
-                        raise HTTPException(
-                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail=f"Item {idx} image {k} has invalid PNG structure"
-                        )
-                    if width <= 0 or height <= 0:
-                        raise HTTPException(
-                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail=f"Item {idx} image {k} has invalid PNG dimensions"
-                        )
-                    if width > MAX_IMAGE_WIDTH or height > MAX_IMAGE_HEIGHT:
-                        raise HTTPException(
-                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail=f"Item {idx} image {k} exceeds allowed PNG dimensions of {MAX_IMAGE_WIDTH}x{MAX_IMAGE_HEIGHT}"
-                        )
-                    decoded_size = len(decoded)
-                    if decoded_size > MAX_IMAGE_BYTES:
-                        raise HTTPException(
-                            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            detail=f"Item {idx} image {k} exceeds allowed size of 150 KB"
-                        )
-                    total_order_images_size += decoded_size
+                    _, image_metadata = validate_png_data_url(v, idx, k)
+                    total_order_images_size += image_metadata["size_bytes"]
                     if total_order_images_size > MAX_ORDER_IMAGES_BYTES:
                         raise HTTPException(
                             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
