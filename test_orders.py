@@ -1621,6 +1621,47 @@ class TestOrdersRoute(unittest.TestCase):
             header += b"A" * (total_size - len(header))
         return header
 
+    def test_build_order_image_storage_path(self):
+        for image_key in ("front", "outside", "side"):
+            self.assertEqual(main.build_order_image_storage_path("user_123", "order_456", 2, image_key), f"users/user_123/orders/order_456/items/2/{image_key}.png")
+
+    def test_build_order_image_storage_path_rejects_invalid_arguments(self):
+        for name in ("uid", "order_id"):
+            for value in (None, 123, "", " user", "user ", "user/name", "user\\name", "user\nname"):
+                args = {"uid": "user", "order_id": "order", "item_index": 0, "image_key": "front"}
+                args[name] = value
+                with self.subTest(name=name, value=value), self.assertRaises(ValueError):
+                    main.build_order_image_storage_path(**args)
+        for value in (True, False, -1):
+            with self.subTest(item_index=value), self.assertRaises(ValueError):
+                main.build_order_image_storage_path("user", "order", value, "front")
+        for value in ("back", "Front", "", None):
+            with self.subTest(image_key=value), self.assertRaises(ValueError):
+                main.build_order_image_storage_path("user", "order", 0, value)
+
+    def test_build_storage_image_reference(self):
+        path = "users/user/orders/order/items/2/outside.png"
+        metadata = {"width": 640, "height": 480, "size_bytes": 12345, "ignored": True}
+        self.assertEqual(main.build_storage_image_reference(path, metadata), {"storage_path": path, "content_type": "image/png", "width": 640, "height": 480, "size_bytes": 12345})
+
+    def test_build_storage_image_reference_rejects_invalid_metadata(self):
+        path = "users/user/orders/order/items/0/front.png"
+        invalid = [None, [], {}, {"width": 1, "height": 1}]
+        for field in ("width", "height", "size_bytes"):
+            for value in (None, True, 0, -1, 1.5, "1"):
+                metadata = {"width": 1, "height": 1, "size_bytes": 1}
+                metadata[field] = value
+                invalid.append(metadata)
+        for metadata in invalid:
+            with self.subTest(metadata=metadata), self.assertRaises(ValueError):
+                main.build_storage_image_reference(path, metadata)
+
+    def test_build_storage_image_reference_rejects_invalid_storage_path(self):
+        metadata = {"width": 1, "height": 1, "size_bytes": 1}
+        for path in (None, 123, "", " path", "path ", "/path", "path/", "path//image.png", "path\\image.png", "path\nimage.png"):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                main.build_storage_image_reference(path, metadata)
+
     def test_validate_png_data_url_returns_decoded_bytes_and_metadata(self):
         """PNG helper returns decoded bytes and trusted image metadata."""
         import base64

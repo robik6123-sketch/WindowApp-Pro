@@ -100,6 +100,49 @@ MAX_ORDER_IMAGES_BYTES = 600 * 1024
 MAX_IMAGE_WIDTH = 2000
 MAX_IMAGE_HEIGHT = 4000
 
+
+def _validate_storage_path_segment(value, argument_name: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{argument_name} must be a non-empty string")
+    if value != value.strip():
+        raise ValueError(f"{argument_name} must not have leading or trailing whitespace")
+    if "/" in value or "\\" in value or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError(f"{argument_name} contains invalid characters")
+
+
+def build_order_image_storage_path(uid: str, order_id: str, item_index: int, image_key: str) -> str:
+    _validate_storage_path_segment(uid, "uid")
+    _validate_storage_path_segment(order_id, "order_id")
+    if not isinstance(item_index, int) or isinstance(item_index, bool) or item_index < 0:
+        raise ValueError("item_index must be a non-negative integer")
+    if image_key not in ("front", "outside", "side"):
+        raise ValueError("image_key must be front, outside, or side")
+    return f"users/{uid}/orders/{order_id}/items/{item_index}/{image_key}.png"
+
+
+def build_storage_image_reference(storage_path: str, image_metadata: dict) -> dict:
+    if not isinstance(storage_path, str) or not storage_path:
+        raise ValueError("storage_path must be a non-empty string")
+    if storage_path != storage_path.strip():
+        raise ValueError("storage_path must not have leading or trailing whitespace")
+    if (storage_path.startswith("/") or storage_path.endswith("/") or "//" in storage_path
+            or "\\" in storage_path or any(ord(char) < 32 or ord(char) == 127 for char in storage_path)):
+        raise ValueError("storage_path is invalid")
+    if not isinstance(image_metadata, dict):
+        raise ValueError("image_metadata must be a dictionary")
+    for field in ("width", "height", "size_bytes"):
+        value = image_metadata.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise ValueError(f"image_metadata {field} must be a positive integer")
+    return {
+        "storage_path": storage_path,
+        "content_type": "image/png",
+        "width": image_metadata["width"],
+        "height": image_metadata["height"],
+        "size_bytes": image_metadata["size_bytes"],
+    }
+
+
 def validate_png_data_url(image_data_url, item_index: int, image_key: str):
     if not isinstance(image_data_url, str):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"Item {item_index} image {image_key} must be a string")
