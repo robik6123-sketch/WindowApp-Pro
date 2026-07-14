@@ -1624,6 +1624,7 @@ class TestOrdersRoute(unittest.TestCase):
     def test_build_order_image_storage_path(self):
         for image_key in ("front", "outside", "side"):
             self.assertEqual(main.build_order_image_storage_path("user_123", "order_456", 2, image_key), f"users/user_123/orders/order_456/items/2/{image_key}.png")
+        self.assertEqual(main.build_order_image_storage_path("user;123", "order;456", 2, "front"), "users/user;123/orders/order;456/items/2/front.png")
 
     def test_build_order_image_storage_path_rejects_invalid_arguments(self):
         for name in ("uid", "order_id"):
@@ -1632,6 +1633,11 @@ class TestOrdersRoute(unittest.TestCase):
                 args[name] = value
                 with self.subTest(name=name, value=value), self.assertRaises(ValueError):
                     main.build_order_image_storage_path(**args)
+        for name, value in (("uid", "user\x80name"), ("order_id", "order\x9fname")):
+            args = {"uid": "user", "order_id": "order", "item_index": 0, "image_key": "front"}
+            args[name] = value
+            with self.subTest(name=name, value=value), self.assertRaises(ValueError):
+                main.build_order_image_storage_path(**args)
         for value in (True, False, -1):
             with self.subTest(item_index=value), self.assertRaises(ValueError):
                 main.build_order_image_storage_path("user", "order", value, "front")
@@ -1640,7 +1646,7 @@ class TestOrdersRoute(unittest.TestCase):
                 main.build_order_image_storage_path("user", "order", 0, value)
 
     def test_build_storage_image_reference(self):
-        path = "users/user/orders/order/items/2/outside.png"
+        path = "users/user;1/orders/order;2/items/2/outside.png"
         metadata = {"width": 640, "height": 480, "size_bytes": 12345, "ignored": True}
         self.assertEqual(main.build_storage_image_reference(path, metadata), {"storage_path": path, "content_type": "image/png", "width": 640, "height": 480, "size_bytes": 12345})
 
@@ -1658,7 +1664,7 @@ class TestOrdersRoute(unittest.TestCase):
 
     def test_build_storage_image_reference_rejects_invalid_storage_path(self):
         metadata = {"width": 1, "height": 1, "size_bytes": 1}
-        for path in (None, 123, "", " path", "path ", "/path", "path/", "path//image.png", "path\\image.png", "path\nimage.png"):
+        for path in (None, 123, "", " path", "path ", "/path", "path/", "path//image.png", "path\\image.png", "path\nimage.png", "path\x80image.png"):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 main.build_storage_image_reference(path, metadata)
 

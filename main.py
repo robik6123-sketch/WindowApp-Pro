@@ -101,12 +101,16 @@ MAX_IMAGE_WIDTH = 2000
 MAX_IMAGE_HEIGHT = 4000
 
 
+def _contains_control_character(value: str) -> bool:
+    return any(ord(char) <= 0x1F or 0x7F <= ord(char) <= 0x9F for char in value)
+
+
 def _validate_storage_path_segment(value, argument_name: str) -> None:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{argument_name} must be a non-empty string")
     if value != value.strip():
         raise ValueError(f"{argument_name} must not have leading or trailing whitespace")
-    if "/" in value or "\\" in value or any(ord(char) < 32 or ord(char) == 127 for char in value):
+    if "/" in value or "\\" in value or _contains_control_character(value):
         raise ValueError(f"{argument_name} contains invalid characters")
 
 
@@ -126,7 +130,7 @@ def build_storage_image_reference(storage_path: str, image_metadata: dict) -> di
     if storage_path != storage_path.strip():
         raise ValueError("storage_path must not have leading or trailing whitespace")
     if (storage_path.startswith("/") or storage_path.endswith("/") or "//" in storage_path
-            or "\\" in storage_path or any(ord(char) < 32 or ord(char) == 127 for char in storage_path)):
+            or "\\" in storage_path or _contains_control_character(storage_path)):
         raise ValueError("storage_path is invalid")
     if not isinstance(image_metadata, dict):
         raise ValueError("image_metadata must be a dictionary")
