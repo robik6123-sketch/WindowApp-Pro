@@ -25,7 +25,7 @@ import uuid
 import struct
 from datetime import datetime
 import firebase_admin
-from firebase_admin import auth
+from firebase_admin import auth, storage
 from auth_dependency import verify_firebase_token
 from user_settings_repository import (
     UserSettingsRepository,
@@ -101,6 +101,10 @@ MAX_IMAGE_WIDTH = 2000
 MAX_IMAGE_HEIGHT = 4000
 
 
+class OrderImageStorageUploadError(Exception):
+    pass
+
+
 def _contains_control_character(value: str) -> bool:
     return any(ord(char) <= 0x1F or 0x7F <= ord(char) <= 0x9F for char in value)
 
@@ -114,6 +118,16 @@ def _validate_storage_path_segment(value, argument_name: str) -> None:
         raise ValueError(f"{argument_name} contains invalid characters")
 
 
+def _validate_storage_path(storage_path: str) -> None:
+    if not isinstance(storage_path, str) or not storage_path:
+        raise ValueError("storage_path must be a non-empty string")
+    if storage_path != storage_path.strip():
+        raise ValueError("storage_path must not have leading or trailing whitespace")
+    if (storage_path.startswith("/") or storage_path.endswith("/") or "//" in storage_path
+            or "\\" in storage_path or _contains_control_character(storage_path)):
+        raise ValueError("storage_path is invalid")
+
+
 def build_order_image_storage_path(uid: str, order_id: str, item_index: int, image_key: str) -> str:
     _validate_storage_path_segment(uid, "uid")
     _validate_storage_path_segment(order_id, "order_id")
@@ -125,13 +139,7 @@ def build_order_image_storage_path(uid: str, order_id: str, item_index: int, ima
 
 
 def build_storage_image_reference(storage_path: str, image_metadata: dict) -> dict:
-    if not isinstance(storage_path, str) or not storage_path:
-        raise ValueError("storage_path must be a non-empty string")
-    if storage_path != storage_path.strip():
-        raise ValueError("storage_path must not have leading or trailing whitespace")
-    if (storage_path.startswith("/") or storage_path.endswith("/") or "//" in storage_path
-            or "\\" in storage_path or _contains_control_character(storage_path)):
-        raise ValueError("storage_path is invalid")
+    _validate_storage_path(storage_path)
     if not isinstance(image_metadata, dict):
         raise ValueError("image_metadata must be a dictionary")
     for field in ("width", "height", "size_bytes"):
@@ -145,6 +153,30 @@ def build_storage_image_reference(storage_path: str, image_metadata: dict) -> di
         "height": image_metadata["height"],
         "size_bytes": image_metadata["size_bytes"],
     }
+
+
+def upload_order_image_to_storage(
+    storage_path: str,
+    decoded_png: bytes,
+    bucket=None,
+) -> None:
+    _validate_storage_path(storage_path)
+    if not isinstance(decoded_png, bytes):
+        raise TypeError("decoded_png must be bytes")
+    if not decoded_png:
+        raise ValueError("decoded_png must not be empty")
+
+    try:
+        target_bucket = bucket if bucket is not None else storage.bucket()
+        blob = target_bucket.blob(storage_path)
+        blob.upload_from_string(
+            decoded_png,
+            content_type="image/png",
+        )
+    except Exception as exc:
+        raise OrderImageStorageUploadError(
+            "Failed to upload order image to Firebase Storage"
+        ) from exc
 
 
 def validate_png_data_url(image_data_url, item_index: int, image_key: str):

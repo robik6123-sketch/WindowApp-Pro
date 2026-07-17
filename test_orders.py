@@ -1668,6 +1668,107 @@ class TestOrdersRoute(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 main.build_storage_image_reference(path, metadata)
 
+    @patch("main.storage.bucket")
+    def test_upload_order_image_to_storage_uses_default_bucket(self, mock_storage_bucket):
+        path = "users/user/orders/order/items/0/front.png"
+        decoded_png = b"validated png bytes"
+        bucket = MagicMock()
+        blob = bucket.blob.return_value
+        mock_storage_bucket.return_value = bucket
+
+        result = main.upload_order_image_to_storage(path, decoded_png)
+
+        self.assertIsNone(result)
+        mock_storage_bucket.assert_called_once_with()
+        bucket.blob.assert_called_once_with(path)
+        blob.upload_from_string.assert_called_once_with(
+            decoded_png,
+            content_type="image/png",
+        )
+
+    @patch("main.storage.bucket")
+    def test_upload_order_image_to_storage_uses_injected_bucket(self, mock_storage_bucket):
+        path = "users/user/orders/order/items/0/outside.png"
+        decoded_png = b"already validated png bytes"
+        bucket = MagicMock()
+
+        result = main.upload_order_image_to_storage(path, decoded_png, bucket=bucket)
+
+        self.assertIsNone(result)
+        mock_storage_bucket.assert_not_called()
+        bucket.blob.assert_called_once_with(path)
+        bucket.blob.return_value.upload_from_string.assert_called_once_with(
+            decoded_png,
+            content_type="image/png",
+        )
+
+    @patch("main.storage.bucket")
+    def test_upload_order_image_to_storage_rejects_invalid_path_before_firebase(self, mock_storage_bucket):
+        bucket = MagicMock()
+
+        with self.assertRaisesRegex(ValueError, "storage_path is invalid"):
+            main.upload_order_image_to_storage("/invalid/path.png", b"bytes", bucket=bucket)
+
+        mock_storage_bucket.assert_not_called()
+        bucket.blob.assert_not_called()
+
+    @patch("main.storage.bucket")
+    def test_upload_order_image_to_storage_rejects_invalid_decoded_png(self, mock_storage_bucket):
+        bucket = MagicMock()
+        path = "users/user/orders/order/items/0/front.png"
+        for value in (bytearray(b"bytes"), memoryview(b"bytes"), "bytes", None, 123):
+            with self.subTest(value=value), self.assertRaises(TypeError):
+                main.upload_order_image_to_storage(path, value, bucket=bucket)
+        with self.assertRaises(ValueError):
+            main.upload_order_image_to_storage(path, b"", bucket=bucket)
+
+        mock_storage_bucket.assert_not_called()
+        bucket.blob.assert_not_called()
+
+    @patch("main.storage.bucket")
+    def test_upload_order_image_to_storage_wraps_default_bucket_error(self, mock_storage_bucket):
+        original = RuntimeError("bucket failed")
+        mock_storage_bucket.side_effect = original
+
+        with self.assertRaises(main.OrderImageStorageUploadError) as raised:
+            main.upload_order_image_to_storage(
+                "users/user/orders/order/items/0/front.png",
+                b"bytes",
+            )
+
+        self.assertEqual(str(raised.exception), "Failed to upload order image to Firebase Storage")
+        self.assertIs(raised.exception.__cause__, original)
+
+    def test_upload_order_image_to_storage_wraps_blob_error(self):
+        original = RuntimeError("blob failed")
+        bucket = MagicMock()
+        bucket.blob.side_effect = original
+
+        with self.assertRaises(main.OrderImageStorageUploadError) as raised:
+            main.upload_order_image_to_storage(
+                "users/user/orders/order/items/0/front.png",
+                b"bytes",
+                bucket=bucket,
+            )
+
+        self.assertEqual(str(raised.exception), "Failed to upload order image to Firebase Storage")
+        self.assertIs(raised.exception.__cause__, original)
+
+    def test_upload_order_image_to_storage_wraps_upload_error(self):
+        original = RuntimeError("upload failed")
+        bucket = MagicMock()
+        bucket.blob.return_value.upload_from_string.side_effect = original
+
+        with self.assertRaises(main.OrderImageStorageUploadError) as raised:
+            main.upload_order_image_to_storage(
+                "users/user/orders/order/items/0/front.png",
+                b"bytes",
+                bucket=bucket,
+            )
+
+        self.assertEqual(str(raised.exception), "Failed to upload order image to Firebase Storage")
+        self.assertIs(raised.exception.__cause__, original)
+
     def test_validate_png_data_url_returns_decoded_bytes_and_metadata(self):
         """PNG helper returns decoded bytes and trusted image metadata."""
         import base64
