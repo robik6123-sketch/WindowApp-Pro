@@ -1769,6 +1769,115 @@ class TestOrdersRoute(unittest.TestCase):
         self.assertEqual(str(raised.exception), "Failed to upload order image to Firebase Storage")
         self.assertIs(raised.exception.__cause__, original)
 
+    @patch("main.storage.bucket")
+    def test_delete_order_image_from_storage_uses_default_bucket(self, mock_storage_bucket):
+        path = "users/user/orders/order/items/0/front.png"
+        bucket = MagicMock()
+        blob = bucket.blob.return_value
+        mock_storage_bucket.return_value = bucket
+
+        result = main.delete_order_image_from_storage(path)
+
+        self.assertIsNone(result)
+        mock_storage_bucket.assert_called_once_with()
+        bucket.blob.assert_called_once_with(path)
+        blob.delete.assert_called_once_with()
+
+    @patch("main.storage.bucket")
+    def test_delete_order_image_from_storage_uses_injected_bucket(self, mock_storage_bucket):
+        path = "users/user/orders/order/items/0/outside.png"
+        bucket = MagicMock()
+
+        result = main.delete_order_image_from_storage(path, bucket=bucket)
+
+        self.assertIsNone(result)
+        mock_storage_bucket.assert_not_called()
+        bucket.blob.assert_called_once_with(path)
+        bucket.blob.return_value.delete.assert_called_once_with()
+
+    @patch("main.storage.bucket")
+    def test_delete_order_image_from_storage_rejects_invalid_path_before_firebase(self, mock_storage_bucket):
+        bucket = MagicMock()
+
+        with self.assertRaisesRegex(ValueError, "storage_path is invalid"):
+            main.delete_order_image_from_storage("/invalid/path.png", bucket=bucket)
+
+        mock_storage_bucket.assert_not_called()
+        bucket.blob.assert_not_called()
+
+    def test_delete_order_image_from_storage_ignores_not_found_from_delete(self):
+        from google.api_core.exceptions import NotFound
+        bucket = MagicMock()
+        bucket.blob.return_value.delete.side_effect = NotFound("missing")
+
+        result = main.delete_order_image_from_storage(
+            "users/user/orders/order/items/0/side.png",
+            bucket=bucket,
+        )
+
+        self.assertIsNone(result)
+        bucket.blob.return_value.delete.assert_called_once_with()
+
+    @patch("main.storage.bucket")
+    def test_delete_order_image_from_storage_wraps_not_found_from_bucket(self, mock_storage_bucket):
+        from google.api_core.exceptions import NotFound
+        original = NotFound("bucket missing")
+        mock_storage_bucket.side_effect = original
+
+        with self.assertRaises(main.OrderImageStorageDeleteError) as raised:
+            main.delete_order_image_from_storage(
+                "users/user/orders/order/items/0/front.png"
+            )
+
+        self.assertEqual(str(raised.exception), "Failed to delete order image from Firebase Storage")
+        self.assertIs(raised.exception.__cause__, original)
+
+    def test_delete_order_image_from_storage_wraps_not_found_from_blob(self):
+        from google.api_core.exceptions import NotFound
+        original = NotFound("blob lookup failed")
+        bucket = MagicMock()
+        bucket.blob.side_effect = original
+
+        with self.assertRaises(main.OrderImageStorageDeleteError) as raised:
+            main.delete_order_image_from_storage(
+                "users/user/orders/order/items/0/front.png",
+                bucket=bucket,
+            )
+
+        self.assertEqual(str(raised.exception), "Failed to delete order image from Firebase Storage")
+        self.assertIs(raised.exception.__cause__, original)
+
+    @patch("main.storage.bucket")
+    def test_delete_order_image_from_storage_wraps_other_errors(self, mock_storage_bucket):
+        path = "users/user/orders/order/items/0/front.png"
+        cases = []
+
+        bucket_error = RuntimeError("bucket failed")
+        mock_storage_bucket.side_effect = bucket_error
+        cases.append(("bucket", bucket_error, None))
+
+        blob_error = RuntimeError("blob failed")
+        blob_bucket = MagicMock()
+        blob_bucket.blob.side_effect = blob_error
+        cases.append(("blob", blob_error, blob_bucket))
+
+        delete_error = RuntimeError("delete failed")
+        delete_bucket = MagicMock()
+        delete_bucket.blob.return_value.delete.side_effect = delete_error
+        cases.append(("delete", delete_error, delete_bucket))
+
+        text_404_error = Exception("404")
+        text_404_bucket = MagicMock()
+        text_404_bucket.blob.return_value.delete.side_effect = text_404_error
+        cases.append(("text 404", text_404_error, text_404_bucket))
+
+        for name, original, bucket in cases:
+            with self.subTest(name=name):
+                with self.assertRaises(main.OrderImageStorageDeleteError) as raised:
+                    main.delete_order_image_from_storage(path, bucket=bucket)
+                self.assertEqual(str(raised.exception), "Failed to delete order image from Firebase Storage")
+                self.assertIs(raised.exception.__cause__, original)
+
     def test_validate_png_data_url_returns_decoded_bytes_and_metadata(self):
         """PNG helper returns decoded bytes and trusted image metadata."""
         import base64

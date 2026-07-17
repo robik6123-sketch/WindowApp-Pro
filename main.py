@@ -26,6 +26,7 @@ import struct
 from datetime import datetime
 import firebase_admin
 from firebase_admin import auth, storage
+from google.api_core.exceptions import NotFound
 from auth_dependency import verify_firebase_token
 from user_settings_repository import (
     UserSettingsRepository,
@@ -105,6 +106,10 @@ class OrderImageStorageUploadError(Exception):
     pass
 
 
+class OrderImageStorageDeleteError(Exception):
+    pass
+
+
 def _contains_control_character(value: str) -> bool:
     return any(ord(char) <= 0x1F or 0x7F <= ord(char) <= 0x9F for char in value)
 
@@ -176,6 +181,30 @@ def upload_order_image_to_storage(
     except Exception as exc:
         raise OrderImageStorageUploadError(
             "Failed to upload order image to Firebase Storage"
+        ) from exc
+
+
+def delete_order_image_from_storage(
+    storage_path: str,
+    bucket=None,
+) -> None:
+    _validate_storage_path(storage_path)
+
+    try:
+        target_bucket = bucket if bucket is not None else storage.bucket()
+        blob = target_bucket.blob(storage_path)
+    except Exception as exc:
+        raise OrderImageStorageDeleteError(
+            "Failed to delete order image from Firebase Storage"
+        ) from exc
+
+    try:
+        blob.delete()
+    except NotFound:
+        return None
+    except Exception as exc:
+        raise OrderImageStorageDeleteError(
+            "Failed to delete order image from Firebase Storage"
         ) from exc
 
 
