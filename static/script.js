@@ -5,12 +5,12 @@ const API_URL = window.location.origin.includes('localhost') || window.location.
 
 // Firebase Configuration (Project: windowapp-pro-2026)
 const firebaseConfig = {
-    apiKey: "AIzaSy" + "DehzO9-zc3fU8oYzJJ68Qqm8Pe2UQQWlU",
+    apiKey: "AIzaSyDVd3vm9oXbye0lTXpyG5Cq8uA4x4RccB0",
     authDomain: "windowapp-pro-2026.firebaseapp.com",
     projectId: "windowapp-pro-2026",
-    storageBucket: "windowapp-pro-2026.appspot.com",
-    messagingSenderId: "169306359146",
-    appId: "1:169306359146:web:8655828556667777"
+    storageBucket: "windowapp-pro-2026.firebasestorage.app",
+    messagingSenderId: "72022534625",
+    appId: "1:72022534625:web:d32e9da81b0e9720830aa0"
 };
 firebase.initializeApp(firebaseConfig);
 

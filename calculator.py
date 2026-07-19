@@ -5,7 +5,7 @@ from settings_models import PricingContext
 
 FIREBASE_STORAGE_BUCKET = os.environ.get(
     "FIREBASE_STORAGE_BUCKET",
-    "windowapp-pro-2026.appspot.com"
+    "windowapp-pro-2026.firebasestorage.app"
 )
 
 class CalculatorPricingError(Exception):
