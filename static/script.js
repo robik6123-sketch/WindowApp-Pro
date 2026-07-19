@@ -19,6 +19,58 @@ let userEmail = null;
 window.orderCart = [];
 window.currentCartOrderId = null;
 
+// 7. Recent Orders History
+async function loadOrderHistory() {
+    if (!idToken) return;
+    const list = document.getElementById('recent-orders-list');
+    try {
+        const res = await fetch(`${API_URL}/api/orders`, {
+            headers: { 'Authorization': `Bearer ${idToken}` }
+        });
+        const orders = await res.json();
+
+        if (!orders || orders.length === 0) {
+            list.innerHTML = '<p style="opacity:0.5;">Історія поки порожня</p>';
+            return;
+        }
+
+        list.innerHTML = orders.map(o => {
+            let cost = 0;
+            let desc = "";
+            if (o.grand_total !== undefined && o.grand_total !== null) {
+                cost = o.grand_total;
+                if (o.cart && o.cart.items) {
+                    desc = `${o.cart.items.length} конструкцій`;
+                } else if (o.input) {
+                    desc = `${o.input.width}x${o.input.height} (${o.input.material_type})`;
+                }
+            } else if (o.cart && o.cart.items) {
+                o.cart.items.forEach(i => cost += i.result.cost_details.total);
+                desc = `${o.cart.items.length} конструкцій`;
+            } else if (o.result) {
+                cost = o.result.cost_details.total;
+                desc = `${o.input.width}x${o.input.height} (${o.input.material_type})`;
+            }
+
+
+            return `
+            <div class="order-history-item" style="padding:10px; border-bottom:1px solid rgba(0,0,0,0.05); display:flex; justify-content:space-between; align-items:center;">
+                <div>
+                    <strong>#${o.id}</strong> - ${desc}
+                    <br><small style="opacity:0.6;">${new Date(o.timestamp).toLocaleString()}</small>
+                </div>
+                <div style="text-align:right;">
+                    <span style="color:#0052cc; font-weight:bold;">${cost.toFixed(2)} грн</span>
+                    <br><button onclick="downloadQuote('${o.id}')" style="font-size:12px; color:#0052cc; border:none; background:none; cursor:pointer; padding:0;">Скачати КП</button>
+                </div>
+            </div>
+            `;
+        }).join('');
+    } catch (e) {
+        list.innerHTML = '<p style="color:red;">Помилка завантаження історії</p>';
+    }
+}
+
 // Auth State Monitor
 firebase.auth().onAuthStateChanged(async (user) => {
     const userInfo = document.getElementById('user-info');
@@ -277,7 +329,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!data.cost_details) throw new Error("Сервер повернув успішну відповідь, але дані розрахунку відсутні.");
 
             currentOrderId = data.order_id;
-            window.lastCalculatedData = payload;
+            window.lastCalculatedData = {
+                ...calcPayload,
+                images: payload.images
+            };
             window.lastResultData = data;
 
             // Update UI
@@ -367,7 +422,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (idToken) headers['Authorization'] = `Bearer ${idToken}`;
 
             const payload = {
-                user_email: userEmail,
                 items: window.orderCart
             };
 
@@ -492,58 +546,6 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('share-vb').addEventListener('click', () => shareReport('vb'));
     document.getElementById('share-wa').addEventListener('click', () => shareReport('wa'));
     document.getElementById('share-mail').addEventListener('click', () => shareReport('mail'));
-
-    // 7. Recent Orders History
-    async function loadOrderHistory() {
-        if (!idToken) return;
-        const list = document.getElementById('recent-orders-list');
-        try {
-            const res = await fetch(`${API_URL}/api/orders`, {
-                headers: { 'Authorization': `Bearer ${idToken}` }
-            });
-            const orders = await res.json();
-
-            if (!orders || orders.length === 0) {
-                list.innerHTML = '<p style="opacity:0.5;">Історія поки порожня</p>';
-                return;
-            }
-
-            list.innerHTML = orders.map(o => {
-                let cost = 0;
-                let desc = "";
-                if (o.grand_total !== undefined && o.grand_total !== null) {
-                    cost = o.grand_total;
-                    if (o.cart && o.cart.items) {
-                        desc = `${o.cart.items.length} конструкцій`;
-                    } else if (o.input) {
-                        desc = `${o.input.width}x${o.input.height} (${o.input.material_type})`;
-                    }
-                } else if (o.cart && o.cart.items) {
-                    o.cart.items.forEach(i => cost += i.result.cost_details.total);
-                    desc = `${o.cart.items.length} конструкцій`;
-                } else if (o.result) {
-                    cost = o.result.cost_details.total;
-                    desc = `${o.input.width}x${o.input.height} (${o.input.material_type})`;
-                }
-
-
-                return `
-                <div class="order-history-item" style="padding:10px; border-bottom:1px solid rgba(0,0,0,0.05); display:flex; justify-content:space-between; align-items:center;">
-                    <div>
-                        <strong>#${o.id}</strong> - ${desc}
-                        <br><small style="opacity:0.6;">${new Date(o.timestamp).toLocaleString()}</small>
-                    </div>
-                    <div style="text-align:right;">
-                        <span style="color:#0052cc; font-weight:bold;">${cost.toFixed(2)} грн</span>
-                        <br><button onclick="downloadQuote('${o.id}')" style="font-size:12px; color:#0052cc; border:none; background:none; cursor:pointer; padding:0;">Скачати КП</button>
-                    </div>
-                </div>
-                `;
-            }).join('');
-        } catch (e) {
-            list.innerHTML = '<p style="color:red;">Помилка завантаження історії</p>';
-        }
-    }
 
     window.downloadQuote = async (orderId) => {
         const headers = {};
